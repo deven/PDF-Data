@@ -373,7 +373,7 @@ sub resolve_references {
   }
 
   # Check object type.
-  if (ref $object eq "HASH") {
+  if (ref($object) =~ /^(?:HASH|PDF::Data)$/) {
     # Resolve references in hash values.
     foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
       $object->{$key} = $self->resolve_references($objects, $object->{$key}) if ref $object->{$key};
@@ -453,7 +453,7 @@ sub enumerate_indirect_objects {
     my $object = $objects->[$i];
 
     # Check object type.
-    if (ref($object) eq "HASH") {
+    if (ref($object) =~ /^(?:HASH|PDF::Data)$/) {
       # Objects to add.
       my @objects;
 
@@ -504,7 +504,7 @@ sub enumerate_shared_objects {
   $ancestors->{$object}++;
 
   # Recurse to check entire object tree.
-  if (ref($object) eq "HASH") {
+  if (ref($object) =~ /^(?:HASH|PDF::Data)$/) {
     foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
       $self->enumerate_shared_objects($objects, $seen, $ancestors, $object->{$key}) if ref($object->{$key}) and not $ancestors->{$object->{$key}};
     }
@@ -545,7 +545,7 @@ sub write_object {
   }
 
   # Check object type.
-  if (ref($object) eq "HASH") {
+  if (ref($object) =~ /^(?:HASH|PDF::Data)$/) {
     # For streams, update length in metadata.
     $object->{Length} = length $object->{-data} if exists $object->{-data};
 
@@ -618,7 +618,7 @@ sub dump_object {
     if (ref($object) and $seen->{$object}) {
       # Previously-seen object; dump the label.
       $output = "$seen->{$object}";
-    } elsif (ref($object) eq "HASH") {
+    } elsif (ref($object) =~ /^(?:HASH|PDF::Data)$/) {
       # Hash object.
       $seen->{$object} = $label;
       if (exists $object->{-data}) {
@@ -664,7 +664,7 @@ sub dump_object {
   } elsif (ref($object) and $seen->{$object}) {
     # Previously-seen object; dump the label.
     $output = $seen->{$object};
-  } elsif (ref($object) eq "HASH") {
+  } elsif (ref($object) =~ /^(?:HASH|PDF::Data)$/) {
     # Hash object.
     $seen->{$object} = $label;
     $output = "{ # $label\n";
