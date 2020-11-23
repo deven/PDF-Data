@@ -20,6 +20,16 @@ use Scalar::Util        qw[blessed reftype];
 our $n = qr/(?:\n|\r\n?)/;                        # Match a newline. (LF, CRLF or CR)
 our $ws = qr/(?:(?:(?>%[^\r\n]*)?\s+)+)/;         # Match whitespace, including PDF comments.
 
+# Declare prototypes.
+sub is_hash ($);
+sub is_array ($);
+sub is_stream ($);
+
+# Utility functions.
+sub is_hash   ($) { ref $_[0] && reftype($_[0]) eq "HASH"; }
+sub is_array  ($) { ref $_[0] && reftype($_[0]) eq "ARRAY"; }
+sub is_stream ($) { &is_hash  && exists $_[0]{-data}; }
+
 # Read and parse PDF file.
 sub read_pdf {
   my ($class, $file) = @_;
@@ -166,7 +176,7 @@ sub merge_content_streams {
   my ($self, $streams) = @_;
 
   # Make sure content is an array.
-  return $streams unless reftype($streams) eq "ARRAY";
+  return $streams unless is_array $streams;
 
   # Remove extra trailing space from streams.
   foreach my $stream (@{$streams}) {
@@ -361,7 +371,7 @@ sub resolve_references {
   my ($self, $objects, $object) = @_;
 
   # Replace indirect object references with a reference to the actual object.
-  if (reftype($object) eq "SCALAR") {
+  if (ref $object and reftype($object) eq "SCALAR") {
     my $id = ${$object};
     if ($objects->{$id}) {
       ($object, my $metadata) = @{$objects->{$id}};
@@ -374,7 +384,7 @@ sub resolve_references {
   }
 
   # Check object type.
-  if (reftype($object) eq "HASH") {
+  if (is_hash $object) {
     # Resolve references in hash values.
     foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
       $object->{$key} = $self->resolve_references($objects, $object->{$key}) if ref $object->{$key};
@@ -386,7 +396,7 @@ sub resolve_references {
       my $len = length $object->{-data};
       $len == $object->{Length} or carp "Warning: Object #$object->{-id}: Stream length does not match metadata! ($len != $object->{Length})\n";
     }
-  } elsif (reftype($object) eq "ARRAY") {
+  } elsif (is_array $object) {
     # Resolve references in array values.
     foreach my $i (0 .. $#{$object}) {
       $object->[$i] = $self->resolve_references($objects, $object->[$i]) if ref $object->[$i];
@@ -454,7 +464,7 @@ sub enumerate_indirect_objects {
     my $object = $objects->[$i];
 
     # Check object type.
-    if (reftype($object) eq "HASH") {
+    if (is_hash $object) {
       # Objects to add.
       my @objects;
 
@@ -468,18 +478,18 @@ sub enumerate_indirect_objects {
 
         # Check each hash key.
         foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
-          if (($object->{Type} // "") eq "/ExtGState" and $key eq "Font" and reftype($object->{Font}) eq "ARRAY" and reftype($object->{Font}[0]) eq "HASH") {
+          if (($object->{Type} // "") eq "/ExtGState" and $key eq "Font" and is_array $object->{Font} and is_hash $object->{Font}[0]) {
             push @objects, $object->{Font}[0];
           } elsif ($key =~ /^(?:Data|First|ID|Last|Next|Obj|Parent|ParentTree|Popup|Prev|Root|StmOwn|Threads|Widths)$/
-              or $key =~ /^(?:AN|Annotation|B|C|CI|DocMDP|F|FontDescriptor|I|IX|K|Lock|N|P|Pg|RI|SE|SV|V)$/ and reftype($object->{$key}) eq "HASH"
-              or reftype($object->{$key}) eq "HASH" and ($object->{$key}{-data} or $object->{$key}{Kids} or ($object->{$key}{Type} // "") =~ /^\/(?:Filespec|Font)$/)
+              or $key =~ /^(?:AN|Annotation|B|C|CI|DocMDP|F|FontDescriptor|I|IX|K|Lock|N|P|Pg|RI|SE|SV|V)$/ and ref $object->{$key} and is_hash $object->{$key}
+              or is_hash $object->{$key} and ($object->{$key}{-data} or $object->{$key}{Kids} or ($object->{$key}{Type} // "") =~ /^\/(?:Filespec|Font)$/)
               or ($object->{S} // "") eq "/Thread" and $key eq "D"
               or ($object->{S} // "") eq "/Hide"   and $key eq "T"
           ) {
             push @objects, $object->{$key};
-          } elsif ($key =~ /^(?:Annots|B|C|CO|Fields|K|Kids|O|Pages|TrapRegions)$/ and reftype($object->{$key}) eq "ARRAY") {
-            push @objects, grep { reftype($_) eq "HASH"; } @{$object->{$key}};
-          } elsif (reftype($object->{$key}) eq "HASH") {
+          } elsif ($key =~ /^(?:Annots|B|C|CO|Fields|K|Kids|O|Pages|TrapRegions)$/ and is_array $object->{$key}) {
+            push @objects, grep { is_hash $_; } @{$object->{$key}};
+          } elsif (is_hash $object->{$key}) {
             push @hashes, $object->{$key};
           }
         }
@@ -505,11 +515,11 @@ sub enumerate_shared_objects {
   $ancestors->{$object}++;
 
   # Recurse to check entire object tree.
-  if (reftype($object) eq "HASH") {
+  if (is_hash $object) {
     foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
       $self->enumerate_shared_objects($objects, $seen, $ancestors, $object->{$key}) if ref $object->{$key} and not $ancestors->{$object->{$key}};
     }
-  } elsif (reftype($object) eq "ARRAY") {
+  } elsif (is_array $object) {
     foreach my $obj (@{$object}) {
       $self->enumerate_shared_objects($objects, $seen, $ancestors, $obj) if ref $obj and not $ancestors->{$obj};
     }
@@ -546,7 +556,7 @@ sub write_object {
   }
 
   # Check object type.
-  if (reftype($object) eq "HASH") {
+  if (is_hash $object) {
     # For streams, update length in metadata.
     $object->{Length} = length $object->{-data} if exists $object->{-data};
 
@@ -555,7 +565,7 @@ sub write_object {
     foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
       next if $key =~ /^-/;
       my $obj = $object->{$key};
-      $self->add_indirect_objects($objects, $obj) if $obj and reftype($obj) eq "HASH" and exists $obj->{-data};
+      $self->add_indirect_objects($objects, $obj) if is_stream $obj;
       print $OUT " " x ($indent + 2), "/$key ";
       if (not ref $obj) {
         print $OUT "$obj\n";
@@ -573,15 +583,15 @@ sub write_object {
       my $newline = substr($object->{-data}, -1) eq "\n" ? "" : "\n";
       print $OUT "stream\n$object->{-data}${newline}endstream\n";
     }
-  } elsif (reftype($object) eq "ARRAY" and not grep { ref $_; } @{$object}) {
+  } elsif (is_array $object and not grep { ref $_; } @{$object}) {
     # Array of simple objects.
     print $OUT "[ @{$object} ]\n";
-  } elsif (reftype($object) eq "ARRAY") {
+  } elsif (is_array $object) {
     # Array object.
     print $OUT "[\n";
     my $spaces = " " x ($indent + 2);
     foreach my $obj (@{$object}) {
-      $self->add_indirect_objects($objects, $obj) if $obj and reftype($obj) eq "HASH" and exists $obj->{-data};
+      $self->add_indirect_objects($objects, $obj) if is_stream $obj;
       print $OUT $spaces;
       if (not ref $obj) {
         print $OUT $obj;
@@ -619,7 +629,7 @@ sub dump_object {
     if (ref $object and $seen->{$object}) {
       # Previously-seen object; dump the label.
       $output = "$seen->{$object}";
-    } elsif (reftype($object) eq "HASH") {
+    } elsif (is_hash $object) {
       # Hash object.
       $seen->{$object} = $label;
       if (exists $object->{-data}) {
@@ -641,10 +651,10 @@ sub dump_object {
         }
         $output =~ s/\{ \# \$pdf->\n/\{\n/;
       }
-    } elsif (reftype($object) eq "ARRAY" and not grep { ref $_; } @{$object}) {
+    } elsif (is_array $object and not grep { ref $_; } @{$object}) {
       # Array of simple objects.
       $output = "[...]";
-    } elsif (reftype($object) eq "ARRAY") {
+    } elsif (is_array $object) {
       # Array object.
       for (my $i = 0; $i < @{$object}; $i++) {
         $output .= sprintf "%s%s,\n", " " x ($indent + 2), $self->dump_object($object->[$i], "$label\[$i\]", $seen, $indent + 2, $mode) if ref $object->[$i];
@@ -665,7 +675,7 @@ sub dump_object {
   } elsif (ref $object and $seen->{$object}) {
     # Previously-seen object; dump the label.
     $output = $seen->{$object};
-  } elsif (reftype($object) eq "HASH") {
+  } elsif (is_hash $object) {
     # Hash object.
     $seen->{$object} = $label;
     $output = "{ # $label\n";
@@ -686,10 +696,10 @@ sub dump_object {
     }
     $output .= (" " x $indent) . "}";
     $output =~ s/\{ \# \$pdf\n/\{\n/;
-  } elsif (reftype($object) eq "ARRAY" and not grep { ref $_; } @{$object}) {
+  } elsif (is_array $object and not grep { ref $_; } @{$object}) {
     # Array of simple objects.
     $output = sprintf "[%s]", join ", ", map { /^\d+\.\d+$/ ? $_ : dump($_); } @{$object};
-  } elsif (reftype($object) eq "ARRAY") {
+  } elsif (is_array $object) {
     # Array object.
     $output .= "[ # $label\n";
     my $spaces = " " x ($indent + 2);
