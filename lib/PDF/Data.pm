@@ -643,17 +643,20 @@ sub enumerate_shared_objects {
     return;
   }
 
+  # Return if this object is an ancestor of itself.
+  return if $ancestors->{$object};
+
   # Add this object to the lookup hash of ancestors.
   $ancestors->{$object}++;
 
   # Recurse to check entire object tree.
   if (is_hash $object) {
     foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
-      $self->enumerate_shared_objects($objects, $seen, $ancestors, $object->{$key}) if ref $object->{$key} and not $ancestors->{$object->{$key}};
+      $self->enumerate_shared_objects($objects, $seen, $ancestors, $object->{$key}) if ref $object->{$key};
     }
   } elsif (is_array $object) {
     foreach my $obj (@{$object}) {
-      $self->enumerate_shared_objects($objects, $seen, $ancestors, $obj) if ref $obj and not $ancestors->{$obj};
+      $self->enumerate_shared_objects($objects, $seen, $ancestors, $obj) if ref $obj;
     }
   }
 
