@@ -54,6 +54,9 @@ sub new {
 sub add_page {
   my ($self, $x, $y) = @_;
 
+  # Default page size to US Letter (8.5" x 11").
+  ($x, $y) = (8.5, 11) if @_ == 1;
+
   # Make sure page size was specified.
   croak "Error: Paper size not specified!\n" unless $x and $y and $x > 0 and $y > 0;
 
