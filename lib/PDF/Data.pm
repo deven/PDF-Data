@@ -30,6 +30,58 @@ sub is_hash   ($) { ref $_[0] && reftype($_[0]) eq "HASH"; }
 sub is_array  ($) { ref $_[0] && reftype($_[0]) eq "ARRAY"; }
 sub is_stream ($) { &is_hash  && exists $_[0]{-data}; }
 
+# Create a new PDF::Data object, representing a minimal PDF file.
+sub new {
+  my ($class) = @_;
+
+  # Get class name if called as an instance method.
+  $class = blessed $class if blessed $class;
+
+  # Create a new instance.
+  my $pdf = bless {}, $class;
+
+  # Set creation timestamp.
+  $pdf->{Info}{CreationDate} = $pdf->timestamp;
+
+  # Create an empty document catalog and page tree.
+  $pdf->{Root}{Pages} = { Kids => [], Count => 0 };
+
+  # Validate the PDF structure and return the new instance.
+  return $pdf->validate;
+}
+
+# Add a new page with the specified size.
+sub add_page {
+  my ($self, $x, $y) = @_;
+
+  # Make sure page size was specified.
+  croak "Error: Paper size not specified!\n" unless $x and $y and $x > 0 and $y > 0;
+
+  # Scale inches to default user space units (72 DPI).
+  $x *= 72 if $x < 72;
+  $y *= 72 if $y < 72;
+
+  # Increment page count for page tree root node.
+  $self->{Root}{Pages}{Count}++;
+
+  # Create a new page object.
+  my $page = {
+    Type      => "/Page",
+    Parent    => $self->{Root}{Pages},
+    MediaBox  => [0, 0, $x, $y],
+    Contents  => { -data  => "" },
+    Resources => {
+      ProcSet => ["/PDF", "/Text"],
+    },
+  };
+
+  # Add page object to page tree root node for simplicity.
+  push @{$self->{Root}{Pages}{Kids}}, $page;
+
+  # Return the new page object.
+  return $page;
+}
+
 # Read and parse PDF file.
 sub read_pdf {
   my ($class, $file) = @_;
@@ -85,13 +137,22 @@ sub read_pdf {
   # Resolve indirect object references.
   $class->resolve_references($objects, $trailer);
 
-  # Return parsed data as a new instance.
-  return bless $trailer, $class;
+  # Create a new instance from the parsed data.
+  my $pdf = bless $trailer, $class;
+
+  # Validate the PDF structure and return the new instance.
+  return $pdf->validate;
 }
 
 # Generate and write a new PDF file.
 sub write_pdf {
   my ($self, $file) = @_;
+
+  # Validate the PDF structure.
+  $self->validate;
+
+  # Update modification timestamp.
+  $self->{Info}{ModDate} = $self->timestamp;
 
   # Array of indirect objects, with lookup hash as first element.
   my $objects = [{}];
@@ -253,6 +314,62 @@ sub timestamp {
   return sprintf "(D:%s%+03d'%02d)", strftime("%Y%m%d%H%M%S", @time), $tz / 60, abs($tz) % 60;
 }
 
+# Validate PDF structure.
+sub validate {
+  my ($self) = @_;
+
+  # Make sure document catalog exists and has the correct type.
+  $self->validate_key("Root", "Type", "/Catalog", "document catalog");
+
+  # Make sure page tree root node exists, has the correct type, and has no parent.
+  $self->validate_key("Root/Pages", "Type", "/Pages", "page tree root");
+  $self->validate_key("Root/Pages", "Parent", undef,  "page tree root");
+
+  # Return this instance.
+  return $self;
+}
+
+# Validate the specified hash key value.
+sub validate_key {
+  my ($self, $hash, $key, $value, $label) = @_;
+
+  # Create the hash if necessary.
+  $hash = $_[1] = {} unless $hash;
+
+  # Get the hash node from the PDF structure by path, if necessary.
+  $hash = $self->get_hash_node($hash) unless is_hash $hash;
+
+  # Make sure the hash key has the correct value.
+  if (defined $value and (not defined $hash->{$key} or $hash->{$key} ne $value)) {
+    carp "Warning: Fixing $label: {$key} $hash->{$key} -> $value\n" if $hash->{$key};
+    $hash->{$key} = $value;
+  } elsif (not defined $value and exists $hash->{$key}) {
+    carp "Warning: Deleting $label: {$key} $hash->{$key}\n" if $hash->{$key};
+    delete $hash->{$key};
+  }
+
+  # Return this instance.
+  return $self;
+}
+
+# Get a hash node from the PDF structure by path.
+sub get_hash_node {
+  my ($self, $path) = @_;
+
+  # Split the path.
+  my @path = split /\//, $path;
+
+  # Find the hash node with the specified path, creating nodes if necessary.
+  my $hash = $self;
+  foreach my $key (@path) {
+    $hash->{$key} ||= {};
+    $hash = $hash->{$key};
+  }
+
+  # Return the hash node.
+  return $hash;
+}
+
 # Parse PDF objects into Perl representations.
 sub parse_objects {
   my ($self, $objects, $data, $offset) = @_;
@@ -392,8 +509,9 @@ sub resolve_references {
 
     # For streams, validate the length metadata.
     if (exists $object->{-data}) {
-      substr($object->{-data}, $object->{Length}) =~ s/\A\s+\z// if length($object->{-data}) > $object->{Length};
+      substr($object->{-data}, $object->{Length}) =~ s/\A\s+\z// if $object->{Length} and length($object->{-data}) > $object->{Length};
       my $len = length $object->{-data};
+      $object->{Length} ||= $len;
       $len == $object->{Length} or carp "Warning: Object #$object->{-id}: Stream length does not match metadata! ($len != $object->{Length})\n";
     }
   } elsif (is_array $object) {
@@ -756,6 +874,14 @@ structures that can be readily manipulated.
 
 =head1 METHODS
 
+=head2 new
+
+Constructor to create an empty PDF::Data object instance.
+
+=head2 add_page
+
+Add a new page to the end of the PDF::Data page tree.
+
 =head2 read_pdf
 
 Read and parse a PDF file, returning a new object instance.
@@ -789,6 +915,18 @@ Find bounding box by analyzing a content stream.  This is only partially impleme
 Generate timestamp in PDF internal format.
 
 =head1 INTERNAL METHODS
+
+=head2 validate
+
+Used by new(), read_pdf() and write_pdf() to validate some parts of the PDF structure.
+
+=head2 validate_key
+
+Used by validate() to validate specific hash key values.
+
+=head2 get_hash_node
+
+Used by validate_key() to get a hash node from the PDF structure by path.
 
 =head2 parse_objects
 
