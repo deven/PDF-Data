@@ -4,7 +4,7 @@ package PDF::Data;
 use v5.16;
 use warnings FATAL => 'all';
 
-# Declare module version.
+# Declare module version.  (Also in pod documentation below.)
 use version; our $VERSION = version->declare('v0.0.1');
 
 # Initialize modules.
@@ -252,9 +252,12 @@ sub merge_content_streams {
   return $merged;
 }
 
-# Find bounding box.
+# Find bounding box for a content stream.
 sub find_bbox {
   my ($self, $content_stream, $new) = @_;
+
+  # Get data from stream, if necessary.
+  $content_stream = $content_stream->{-data} if is_stream $content_stream;
 
   # Split content stream into lines.
   my @lines = grep { $_ ne ""; } split /\n/, $content_stream;
@@ -302,6 +305,14 @@ sub find_bbox {
 
   # Return content stream.
   return $content_stream;
+}
+
+# Make a new bounding box for a content stream.
+sub new_bbox {
+  my ($self, $content_stream) = @_;
+
+  # Call find_bbox() with "new" parameter.
+  $self->find_bbox($content_stream, 1);
 }
 
 # Generate timestamp in PDF internal format.
@@ -876,41 +887,62 @@ structures that can be readily manipulated.
 
 =head2 new
 
+  my $pdf = PDF::Data->new;
+
 Constructor to create an empty PDF::Data object instance.
 
 =head2 add_page
 
-Add a new page to the end of the PDF::Data page tree.
+  $pdf->add_page(8.5, 11);
+
+Add a new page with the specified size to the end of the PDF::Data page tree.
 
 =head2 read_pdf
+
+  my $pdf = PDF::Data->read_pdf($file);
 
 Read and parse a PDF file, returning a new object instance.
 
 =head2 write_pdf
 
+  $pdf->write_pdf($file);
+
 Generate and write a new PDF file from the current state of the PDF data.
 
 =head2 dump_pdf
+
+  $pdf->dump_pdf($file);
 
 Dump the PDF internal structure and data for debugging.
 
 =head2 dump_outline
 
+  $pdf->dump_outline($file);
+
 Dump an outline of the PDF internal structure for debugging.
 
 =head2 merge_content_streams
+
+  $pdf->merge_content_streams($array_of_streams);
 
 Merge multiple content streams into a single content stream.
 
 =head2 find_bbox
 
+  $pdf->find_bbox($content_stream);
+
 Find bounding box by analyzing a content stream.  This is only partially implemented.
 
 =head2 new_bbox
 
+  $new_content = $pdf->new_bbox($content_stream);
+
 Find bounding box by analyzing a content stream.  This is only partially implemented.
 
 =head2 timestamp
+
+  my $timestamp = $pdf->timestamp($time);
+  my $now       = $pdf->timestamp;
 
 Generate timestamp in PDF internal format.
 
@@ -918,54 +950,78 @@ Generate timestamp in PDF internal format.
 
 =head2 validate
 
+  $pdf->validate;
+
 Used by new(), read_pdf() and write_pdf() to validate some parts of the PDF structure.
 
 =head2 validate_key
+
+  $pdf->validate_key($hash, $key, $value, $label);
 
 Used by validate() to validate specific hash key values.
 
 =head2 get_hash_node
 
+  my $hash = $pdf->get_hash_node($path);
+
 Used by validate_key() to get a hash node from the PDF structure by path.
 
 =head2 parse_objects
+
+  my @objects = $pdf->parse_objects($objects, $data, $offset);
 
 Used by read_pdf() to parse PDF objects into Perl representations.
 
 =head2 filter_stream
 
+  $pdf->filter_stream($stream);
+
 Used by parse_objects() to inflate compressed streams.
 
 =head2 resolve_references
+
+  $object = $pdf->resolve_references($objects, $object);
 
 Used by read_pdf() to replace parsed indirect object references with
 direct references to the objects in question.
 
 =head2 write_indirect_objects
 
+  my $xrefs = $pdf->write_indirect_objects($OUT, $objects, $seen);
+
 Used by write_pdf() to write all indirect objects to a new PDF file.
 
 =head2 enumerate_indirect_objects
+
+  $pdf->enumerate_indirect_objects($objects);
 
 Used by write_indirect_objects() to identify which objects in the PDF
 data structure need to be indirect objects.
 
 =head2 enumerate_shared_objects
 
+  $pdf->enumerate_shared_objects($objects, $seen, $ancestors, $object);
+
 Used by enumerate_indirect_objects() to find objects which are already
 shared (referenced from multiple objects in the PDF data structure).
 
 =head2 add_indirect_objects
+
+  $pdf->add_indirect_objects($objects, @objects);
 
 Used by enumerate_indirect_objects() and enumerate_shared_objects() to
 add objects to the list of indirect objects to be written out.
 
 =head2 write_object
 
+  $pdf->write_object($OUT, $objects, $seen, $object, $indent);
+
 Used by write_indirect_objects(), and called by itself recursively, to
 write direct objects out to the PDF file.
 
 =head2 dump_object
+
+  my $output = $pdf->dump_object($object, $label, $seen, $indent, $mode);
 
 Used by dump_pdf(), and called by itself recursively, to dump/outline
 the specified PDF object.
