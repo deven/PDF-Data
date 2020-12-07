@@ -232,7 +232,7 @@ sub dump_outline {
   my ($self, $file) = @_;
 
   # Call dump_pdf() with outline parameter.
-  return $self->dump_pdf($file // "-", 1);
+  return $self->dump_pdf($file // "-", "outline");
 }
 
 # Merge content streams.
