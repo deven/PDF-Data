@@ -9,6 +9,7 @@ use version; our $VERSION = version->declare('v0.0.1');
 
 # Initialize modules.
 use Carp                qw[carp croak confess];;
+use Clone;
 use Compress::Raw::Zlib qw[:status];
 use Data::Dump          qw[dd dump];
 use List::MoreUtils     qw[minmax];
@@ -50,38 +51,10 @@ sub new {
   return $pdf->validate;
 }
 
-# Deep clone entire PDF::Data object or specified data structure.
+# Deep copy entire PDF::Data object.
 sub clone {
-  my ($self, $object, $previous) = @_;
-
-  # Default to cloning the entire PDF::Data object.
-  $object //= $self;
-
-  # Check object type.
-  if (is_hash $object) {
-    # Get hash keys.
-    my @keys = sort keys %{$object};
-
-    # Check if this is a parent object.
-    return undef if $previous and grep {
-      ($object->{$_} // "") eq $previous or is_array $object->{$_} and grep { $_ eq $previous; } @{$object->{$_}}
-    } @keys;
-
-    # Clone the hash.
-    return { map { $_, ref $object->{$_} ? $self->clone($object->{$_}, $object) : $object->{$_}; } @keys};
-  } elsif (is_array $object) {
-    # Check if this is a parent object.
-    return undef if $previous and grep { $_ eq $previous; } @{$object};
-
-    # Clone the array.
-    return [ map { ref $_ ? $self->clone($_, $object) : $_; } @{$object} ];
-  } elsif (ref $object) {
-    # Sanity check.
-    die "Unknown reference type \"" . ref($object) . "\"!\n";
-  } else {
-    # Not a reference, return the value.
-    return $object;
-  }
+  my ($self) = @_;
+  return Clone::clone($self);
 }
 
 # Create a new page with the specified size.
@@ -110,6 +83,20 @@ sub new_page {
       ProcSet => ["/PDF", "/Text"],
     },
   };
+}
+
+# Deep copy the specified page object.
+sub copy_page {
+  my ($self, $page) = @_;
+
+  # Temporarily hide parent reference.
+  delete local $page->{Parent};
+
+  # Clone the page object.
+  my $copied_page = Clone::clone($page);
+
+  # return cloned page object.
+  return $copied_page;
 }
 
 # Append the specified page to the PDF.
@@ -938,15 +925,21 @@ Constructor to create an empty PDF::Data object instance.
 
 =head2 clone
 
-  my $clone = $pdf->clone($data);
+  my $pdf_clone = $pdf->clone;
 
-Deep copy the PDF::Data object itself (by default), or the specified data structure.
+Deep copy the entire PDF::Data object itself.
 
 =head2 new_page
 
   my $page = $pdf->new_page(8.5, 11);
 
 Create a new page object with the specified size.
+
+=head2 copy_page
+
+  my $copied_page = $pdf->copy_page($page);
+
+Deep copy a single page object.
 
 =head2 append_page
 
