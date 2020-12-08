@@ -50,8 +50,8 @@ sub new {
   return $pdf->validate;
 }
 
-# Add a new page with the specified size.
-sub add_page {
+# Create a new page with the specified size.
+sub new_page {
   my ($self, $x, $y) = @_;
 
   # Default page size to US Letter (8.5" x 11").
@@ -67,21 +67,26 @@ sub add_page {
   # Increment page count for page tree root node.
   $self->{Root}{Pages}{Count}++;
 
-  # Create a new page object.
-  my $page = {
+  # Create and return a new page object.
+  return {
     Type      => "/Page",
-    Parent    => $self->{Root}{Pages},
     MediaBox  => [0, 0, $x, $y],
     Contents  => { -data  => "" },
     Resources => {
       ProcSet => ["/PDF", "/Text"],
     },
   };
+}
+
+# Append the specified page to the PDF.
+sub append_page {
+  my ($self, $page) = @_;
 
   # Add page object to page tree root node for simplicity.
   push @{$self->{Root}{Pages}{Kids}}, $page;
+  $page->{Parent} = $self->{Root}{Pages};
 
-  # Return the new page object.
+  # Return the page object.
   return $page;
 }
 
@@ -897,11 +902,17 @@ structures that can be readily manipulated.
 
 Constructor to create an empty PDF::Data object instance.
 
-=head2 add_page
+=head2 new_page
 
-  $pdf->add_page(8.5, 11);
+  my $page = $pdf->new_page(8.5, 11);
 
-Add a new page with the specified size to the end of the PDF::Data page tree.
+Create a new page object with the specified size.
+
+=head2 append_page
+
+  $page = $pdf->append_page($page);
+
+Append the specified page object to the end of the PDF page tree.
 
 =head2 read_pdf
 
