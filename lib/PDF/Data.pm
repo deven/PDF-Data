@@ -71,9 +71,6 @@ sub new_page {
   $x *= 72 if $x < 72;
   $y *= 72 if $y < 72;
 
-  # Increment page count for page tree root node.
-  $self->{Root}{Pages}{Count}++;
-
   # Create and return a new page object.
   return {
     Type      => "/Page",
@@ -102,6 +99,9 @@ sub copy_page {
 # Append the specified page to the PDF.
 sub append_page {
   my ($self, $page) = @_;
+
+  # Increment page count for page tree root node.
+  $self->{Root}{Pages}{Count}++;
 
   # Add page object to page tree root node for simplicity.
   push @{$self->{Root}{Pages}{Kids}}, $page;
