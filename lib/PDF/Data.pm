@@ -50,6 +50,40 @@ sub new {
   return $pdf->validate;
 }
 
+# Deep clone entire PDF::Data object or specified data structure.
+sub clone {
+  my ($self, $object, $previous) = @_;
+
+  # Default to cloning the entire PDF::Data object.
+  $object //= $self;
+
+  # Check object type.
+  if (is_hash $object) {
+    # Get hash keys.
+    my @keys = sort keys %{$object};
+
+    # Check if this is a parent object.
+    return undef if $previous and grep {
+      ($object->{$_} // "") eq $previous or is_array $object->{$_} and grep { $_ eq $previous; } @{$object->{$_}}
+    } @keys;
+
+    # Clone the hash.
+    return { map { $_, ref $object->{$_} ? $self->clone($object->{$_}, $object) : $object->{$_}; } @keys};
+  } elsif (is_array $object) {
+    # Check if this is a parent object.
+    return undef if $previous and grep { $_ eq $previous; } @{$object};
+
+    # Clone the array.
+    return [ map { ref $_ ? $self->clone($_, $object) : $_; } @{$object} ];
+  } elsif (ref $object) {
+    # Sanity check.
+    die "Unknown reference type \"" . ref($object) . "\"!\n";
+  } else {
+    # Not a reference, return the value.
+    return $object;
+  }
+}
+
 # Create a new page with the specified size.
 sub new_page {
   my ($self, $x, $y) = @_;
@@ -901,6 +935,12 @@ structures that can be readily manipulated.
   my $pdf = PDF::Data->new;
 
 Constructor to create an empty PDF::Data object instance.
+
+=head2 clone
+
+  my $clone = $pdf->clone($data);
+
+Deep copy the PDF::Data object itself (by default), or the specified data structure.
 
 =head2 new_page
 
