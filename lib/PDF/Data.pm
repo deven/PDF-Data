@@ -982,10 +982,13 @@ Generate and write a new PDF file from the current state of the PDF data.
 
 =head2 pdf_file_data
 
+  my $pdf_file_data = $document->pdf_file_data;
+
 Generate PDF file data from the current state of the PDF data structure,
 suitable for writing to an output PDF file.  This method is used by the
 C<write_pdf()> method to generate the raw string of bytes to be written
-to the output PDF file.
+to the output PDF file.  This data can be directly used (e.g. as a MIME
+attachment) without the need to actually write a PDF file to disk.
 
 =head2 dump_pdf
 
