@@ -228,7 +228,7 @@ sub pdf_file_data {
   # Add cross-reference table.
   my $startxref   = length($pdf_file_data);
   $pdf_file_data .= sprintf "xref\n0 %d\n", scalar @{$xrefs};
-  $pdf_file_data .= @{$xrefs};
+  $pdf_file_data .= join "", @{$xrefs};
 
   # Save correct size in trailer dictionary.
   $self->{Size} = scalar @{$xrefs};
