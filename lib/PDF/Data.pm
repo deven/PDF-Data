@@ -1,13 +1,16 @@
 package PDF::Data;
 
-# Require Perl v5.16; enable fatal warnings.
+# Require Perl v5.16; enable fatal warnings and UTF-8.
 use v5.16;
 use warnings FATAL => 'all';
+use utf8;
 
 # Declare module version.  (Also in pod documentation below.)
 use version; our $VERSION = version->declare('v0.0.1');
 
 # Initialize modules.
+use mro;
+use namespace::autoclean;
 use Carp                qw[carp croak confess];;
 use Clone;
 use Compress::Raw::Zlib qw[:status];
@@ -33,10 +36,10 @@ sub is_stream ($) { &is_hash  && exists $_[0]{-data}; }
 
 # Create a new PDF::Data object, representing a minimal PDF file.
 sub new {
-  my ($class) = @_;
+  my ($self) = @_;
 
-  # Get class name if called as an instance method.
-  $class = blessed $class if blessed $class;
+  # Get the class name.
+  my $class = blessed $self || $self;
 
   # Create a new instance.
   my $pdf = bless {}, $class;
