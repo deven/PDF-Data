@@ -20,6 +20,9 @@ use List::Util          qw[max];
 use POSIX               qw[mktime strftime];
 use Scalar::Util        qw[blessed reftype];
 
+# Use byte strings instead of Unicode character strings.
+use bytes;
+
 # Basic parsing regular expressions.
 our $n = qr/(?:\n|\r\n?)/;                        # Match a newline. (LF, CRLF or CR)
 our $ws = qr/(?:(?:(?>%[^\r\n]*)?\s+)+)/;         # Match whitespace, including PDF comments.
@@ -180,6 +183,30 @@ sub read_pdf {
 sub write_pdf {
   my ($self, $file) = @_;
 
+  # Generate PDF file data.
+  my $pdf_data = $self->pdf_file_data;
+
+  # Check if standard output is wanted.
+  if ($file eq "-") {
+    # Write PDF file data to standard output.
+    binmode STDOUT           or croak "<standard output>: $!\n";
+    print   STDOUT $pdf_data or croak "<standard output>: $!\n";
+  } else {
+    # Write PDF file data to specified output file.
+    open my $OUT, ">", $file or croak "$file $!\n";
+    binmode $OUT             or croak "$file $!\n";
+    print   $OUT $pdf_data   or croak "$file $!\n";
+    close   $OUT             or croak "$file $!\n";
+
+    # Print success message.
+    print STDERR "Wrote new PDF file \"$file\".\n\n";
+  }
+}
+
+# Generate PDF file data suitable for writing to an output PDF file.
+sub pdf_file_data {
+  my $self = shift;
+
   # Validate the PDF structure.
   $self->validate;
 
@@ -189,44 +216,35 @@ sub write_pdf {
   # Array of indirect objects, with lookup hash as first element.
   my $objects = [{}];
 
-  # Objects seen while writing the PDF file.
+  # Objects seen while generating the PDF file data.
   my $seen = {};
 
-  # Use "stdout" instead of "-" to describe standard input.
-  my $filename = $file =~ s/^-$/stdout/r;
+  # Start with PDF header.
+  my $pdf_file_data = "%PDF-1.4\n%\xBF\xF7\xA2\xFE\n\n";
 
-  # Open output file.
-  open my $OUT, ">$file" or croak "$filename: $!\n";
+  # Write all indirect objects.
+  my $xrefs = $self->write_indirect_objects(\$pdf_file_data, $objects, $seen);
 
-  # Write PDF header.
-  print $OUT "%PDF-1.4\n%\xBF\xF7\xA2\xFE\n\n";
-
-  # Write all indirect objects to PDF file.
-  my $xrefs = $self->write_indirect_objects($OUT, $objects, $seen);
-
-  # Write cross-reference table.
-  my $startxref = tell $OUT;
-  printf $OUT "xref\n0 %d\n", scalar @{$xrefs};
-  print $OUT @{$xrefs};
+  # Add cross-reference table.
+  my $startxref   = length($pdf_file_data);
+  $pdf_file_data .= sprintf "xref\n0 %d\n", scalar @{$xrefs};
+  $pdf_file_data .= @{$xrefs};
 
   # Save correct size in trailer dictionary.
   $self->{Size} = scalar @{$xrefs};
 
   # Write trailer dictionary.
-  print $OUT "trailer ";
-  $self->write_object($OUT, $objects, $seen, $self, 0);
+  $pdf_file_data .= "trailer ";
+  $self->write_object(\$pdf_file_data, $objects, $seen, $self, 0);
 
   # Write startxref value.
-  print $OUT "startxref\n$startxref\n";
+  $pdf_file_data .= "startxref\n$startxref\n";
 
-  # End of PDF file.
-  print $OUT "%%EOF\n";
+  # End of PDF file data.
+  $pdf_file_data .= "%%EOF\n";
 
-  # Close the output file.
-  close $OUT or croak "$filename: $!\n";
-
-  # Print success message.
-  print STDERR "Wrote new PDF file \"$file\".\n\n" unless $file eq "-";
+  # Return PDF file data.
+  return $pdf_file_data;
 }
 
 # Dump internal structure of PDF file.
@@ -568,9 +586,9 @@ sub resolve_references {
   return $object;
 }
 
-# Write all indirect objects to PDF file.
+# Write all indirect objects to PDF file data.
 sub write_indirect_objects {
-  my ($self, $OUT, $objects, $seen) = @_;
+  my ($self, $pdf_file_data, $objects, $seen) = @_;
 
   # Enumerate all indirect objects.
   $self->enumerate_indirect_objects($objects);
@@ -581,16 +599,16 @@ sub write_indirect_objects {
   # Loop across indirect objects.
   for (my $i = 1; $i <= $#{$objects}; $i++) {
     # Save file offset for cross-reference table.
-    push @{$xrefs}, sprintf "%010d 00000 n \n", tell $OUT;
+    push @{$xrefs}, sprintf "%010d 00000 n \n", length(${$pdf_file_data});
 
     # Write the indirect object header.
-    print $OUT "$i 0 obj\n";
+    ${$pdf_file_data} .= "$i 0 obj\n";
 
     # Write the object itself.
-    $self->write_object($OUT, $objects, $seen, $objects->[$i], 0);
+    $self->write_object($pdf_file_data, $objects, $seen, $objects->[$i], 0);
 
     # Write the indirect object trailer.
-    print $OUT "endobj\n\n";
+    ${$pdf_file_data} .= "endobj\n\n";
   }
 
   # Return cross-reference file offsets.
@@ -710,9 +728,9 @@ sub add_indirect_objects {
   }
 }
 
-# Write a direct object to the PDF file.
+# Write a direct object to the string of PDF file data.
 sub write_object {
-  my ($self, $OUT, $objects, $seen, $object, $indent) = @_;
+  my ($self, $pdf_file_data, $objects, $seen, $object, $indent) = @_;
 
   # Make sure the same object isn't written twice.
   if (ref $object and $seen->{$object}++) {
@@ -725,59 +743,59 @@ sub write_object {
     $object->{Length} = length $object->{-data} if exists $object->{-data};
 
     # Dictionary object.
-    print $OUT "<<\n";
+    ${$pdf_file_data} .= "<<\n";
     foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
       next if $key =~ /^-/;
       my $obj = $object->{$key};
       $self->add_indirect_objects($objects, $obj) if is_stream $obj;
-      print $OUT " " x ($indent + 2), "/$key ";
+      ${$pdf_file_data} .= join "", " " x ($indent + 2), "/$key ";
       if (not ref $obj) {
-        print $OUT "$obj\n";
+        ${$pdf_file_data} .= "$obj\n";
       } elsif ($objects->[0]{$obj}) {
-        print $OUT "$objects->[0]{$obj} 0 R\n";
+        ${$pdf_file_data} .= "$objects->[0]{$obj} 0 R\n";
       } else {
-        $self->write_object($OUT, $objects, $seen, $object->{$key}, ref $object ? $indent + 2 : 0);
+        $self->write_object($pdf_file_data, $objects, $seen, $object->{$key}, ref $object ? $indent + 2 : 0);
       }
     }
-    print $OUT " " x $indent, ">>\n";
+    ${$pdf_file_data} .= join "", " " x $indent, ">>\n";
 
     # For streams, write the stream data.
     if (exists $object->{-data}) {
       croak "Stream written as direct object!\n" if $indent;
       my $newline = substr($object->{-data}, -1) eq "\n" ? "" : "\n";
-      print $OUT "stream\n$object->{-data}${newline}endstream\n";
+      ${$pdf_file_data} .= "stream\n$object->{-data}${newline}endstream\n";
     }
   } elsif (is_array $object and not grep { ref $_; } @{$object}) {
     # Array of simple objects.
-    print $OUT "[ @{$object} ]\n";
+    ${$pdf_file_data} .= "[ @{$object} ]\n";
   } elsif (is_array $object) {
     # Array object.
-    print $OUT "[\n";
+    ${$pdf_file_data} .= "[\n";
     my $spaces = " " x ($indent + 2);
     foreach my $obj (@{$object}) {
       $self->add_indirect_objects($objects, $obj) if is_stream $obj;
-      print $OUT $spaces;
+      ${$pdf_file_data} .= $spaces;
       if (not ref $obj) {
-        print $OUT $obj;
+        ${$pdf_file_data} .= $obj;
         $spaces = " ";
       } elsif ($objects->[0]{$obj}) {
-        print $OUT "$objects->[0]{$obj} 0 R\n";
+        ${$pdf_file_data} .= "$objects->[0]{$obj} 0 R\n";
         $spaces = " " x ($indent + 2);
       } else {
-        $self->write_object($OUT, $objects, $seen, $obj, $indent + 2);
+        $self->write_object($pdf_file_data, $objects, $seen, $obj, $indent + 2);
         $spaces = " " x ($indent + 2);
       }
     }
-    print $OUT "\n" if $spaces eq " ";
-    print $OUT " " x $indent, "]\n";
+    ${$pdf_file_data} .= "\n" if $spaces eq " ";
+    ${$pdf_file_data} .= join "", " " x $indent, "]\n";
   } elsif (reftype($object) eq "SCALAR") {
     # Unresolved indirect reference.
     my ($id, $gen) = split /-/, ${$object};
     $gen ||= "0";
-    print $OUT " " x $indent, "($id $gen R)\n";
+    ${$pdf_file_data} .= join "", " " x $indent, "($id $gen R)\n";
   } else {
     # Simple object.
-    print $OUT " " x $indent, "$object\n";
+    ${$pdf_file_data} .= join "", " " x $indent, "$object\n";
   }
 }
 
@@ -962,6 +980,13 @@ Read and parse a PDF file, returning a new object instance.
 
 Generate and write a new PDF file from the current state of the PDF data.
 
+=head2 pdf_file_data
+
+Generate PDF file data from the current state of the PDF data structure,
+suitable for writing to an output PDF file.  This method is used by the
+C<write_pdf()> method to generate the raw string of bytes to be written
+to the output PDF file.
+
 =head2 dump_pdf
 
   $pdf->dump_pdf($file);
@@ -1040,9 +1065,10 @@ direct references to the objects in question.
 
 =head2 write_indirect_objects
 
-  my $xrefs = $pdf->write_indirect_objects($OUT, $objects, $seen);
+  my $xrefs = $pdf->write_indirect_objects($pdf_file_data, $objects, $seen);
 
-Used by write_pdf() to write all indirect objects to a new PDF file.
+Used by write_pdf() to write all indirect objects to a string of new
+PDF file data.
 
 =head2 enumerate_indirect_objects
 
@@ -1067,10 +1093,10 @@ add objects to the list of indirect objects to be written out.
 
 =head2 write_object
 
-  $pdf->write_object($OUT, $objects, $seen, $object, $indent);
+  $pdf->write_object($pdf_file_data, $objects, $seen, $object, $indent);
 
 Used by write_indirect_objects(), and called by itself recursively, to
-write direct objects out to the PDF file.
+write direct objects out to the string of new PDF file data.
 
 =head2 dump_object
 
