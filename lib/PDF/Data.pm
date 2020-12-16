@@ -181,10 +181,13 @@ sub read_pdf {
 
 # Generate and write a new PDF file.
 sub write_pdf {
-  my ($self, $file) = @_;
+  my ($self, $file, $time) = @_;
+
+  # Default missing timestamp to current time, but keep a zero time as a flag.
+  $time //= time;
 
   # Generate PDF file data.
-  my $pdf_data = $self->pdf_file_data;
+  my $pdf_data = $self->pdf_file_data($time);
 
   # Check if standard output is wanted.
   if ($file eq "-") {
@@ -198,6 +201,9 @@ sub write_pdf {
     print   $OUT $pdf_data   or croak "$file $!\n";
     close   $OUT             or croak "$file $!\n";
 
+    # Set modification time to the specified or current timestamp, unless zero.
+    utime $time, $time, $file if $time;
+
     # Print success message.
     print STDERR "Wrote new PDF file \"$file\".\n\n";
   }
@@ -205,13 +211,16 @@ sub write_pdf {
 
 # Generate PDF file data suitable for writing to an output PDF file.
 sub pdf_file_data {
-  my $self = shift;
+  my ($self, $time) = @_;
+
+  # Default missing timestamp to current time, but keep a zero time as a flag.
+  $time //= time;
+
+  # Set PDF modification timestamp, unless zero.
+  $self->{Info}{ModDate} = $self->timestamp($time) if $time;
 
   # Validate the PDF structure.
   $self->validate;
-
-  # Update modification timestamp.
-  $self->{Info}{ModDate} = $self->timestamp;
 
   # Array of indirect objects, with lookup hash as first element.
   my $objects = [{}];
@@ -976,19 +985,35 @@ Read and parse a PDF file, returning a new object instance.
 
 =head2 write_pdf
 
-  $pdf->write_pdf($file);
+  $pdf->write_pdf($file, $time);
 
 Generate and write a new PDF file from the current state of the PDF data.
 
+The C<$time> parameter is optional; if not defined, it defaults to the
+current time.  If C<$time> is defined but false (zero or empty string),
+no timestamp will be set.
+
+The optional C<$time> parameter may be used to specify the modification
+timestamp to save in the PDF metadata and to set the file modification
+timestamp of the output file.  If not specified, it defaults to the
+current time.  If a false value is specified, this method will skip
+setting the modification time in the PDF metadata, and skip setting the
+timestamp on the output file.
+
 =head2 pdf_file_data
 
-  my $pdf_file_data = $document->pdf_file_data;
+  my $pdf_file_data = $document->pdf_file_data($time);
 
 Generate PDF file data from the current state of the PDF data structure,
 suitable for writing to an output PDF file.  This method is used by the
 C<write_pdf()> method to generate the raw string of bytes to be written
 to the output PDF file.  This data can be directly used (e.g. as a MIME
 attachment) without the need to actually write a PDF file to disk.
+
+The optional C<$time> parameter may be used to specify the modification
+timestamp to save in the PDF metadata.  If not specified, it defaults to
+the current time.  If a false value is specified, this method will skip
+setting the modification time in the PDF metadata.
 
 =head2 dump_pdf
 
