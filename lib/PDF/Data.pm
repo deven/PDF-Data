@@ -541,6 +541,10 @@ sub filter_stream {
 
   # Decompress stream data if necessary.
   if ($stream->{Filter} eq "/FlateDecode") {
+    # Remember that this PDF file is using compressed streams.
+    my $self->{-compress} = 1;
+
+    # Decompress the stream.
     my $zlib = new Compress::Raw::Zlib::Inflate;
     my $output;
     my $status = $zlib->inflate($stream->{-data}, $output);
@@ -550,6 +554,23 @@ sub filter_stream {
     } else {
       croak "Object #$stream->{-id}: Stream inflation failed! ($zlib->msg)\n";
     }
+  }
+}
+
+# Compress stream data.
+sub compress_stream {
+  my ($self, $stream) = @_;
+
+  # Return a new stream so the in-memory copy remains uncompressed to work with.
+  my $new_stream = { %{$stream} };
+  my $zlib = new Compress::Raw::Zlib::Deflate(-Level => 9, -Bufsize => 65536);
+  my $status = $zlib->deflate($stream->{-data}, $new_stream->{-data});
+  if ($status == Z_OK or $status == Z_STREAM_END) {
+    $new_stream->{Length} = length $new_stream->{-data};
+    $new_stream->{Filter} = "/FlateDecode";
+    return $new_stream;
+  } else {
+    croak "Object #$stream->{-id}: Stream deflation failed! ($zlib->msg)\n";
   }
 }
 
@@ -748,8 +769,14 @@ sub write_object {
 
   # Check object type.
   if (is_hash $object) {
-    # For streams, update length in metadata.
-    $object->{Length} = length $object->{-data} if is_stream $object;
+    # For streams, compress the stream or update the length metadata.
+    if (is_stream $object) {
+      if ($self->{-compress}) {
+        $object = compress_stream $object;
+      } else {
+        $object->{Length} = length $object->{-data};
+      }
+    }
 
     # Dictionary object.
     ${$pdf_file_data} .= "<<\n";
@@ -1083,6 +1110,15 @@ Used by read_pdf() to parse PDF objects into Perl representations.
   $pdf->filter_stream($stream);
 
 Used by parse_objects() to inflate compressed streams.
+
+=head2 compress_stream
+
+  $new_stream = $pdf->compress_stream($stream);
+
+Used by write_object() to compress streams if enabled.  This is controlled
+by the $pdf->{-compress} flag, which is set automatically when reading a PDF
+file with compressed streams, but must be set manually for PDF files created
+from scratch.
 
 =head2 resolve_references
 
