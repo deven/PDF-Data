@@ -39,13 +39,13 @@ sub is_stream ($) { &is_hash  && exists $_[0]{-data}; }
 
 # Create a new PDF::Data object, representing a minimal PDF file.
 sub new {
-  my ($self) = @_;
+  my ($self, %args) = @_;
 
   # Get the class name.
   my $class = blessed $self || $self;
 
-  # Create a new instance.
-  my $pdf = bless {}, $class;
+  # Create a new instance using the constructor arguments.
+  my $pdf = bless \%args, $class;
 
   # Set creation timestamp.
   $pdf->{Info}{CreationDate} = $pdf->timestamp;
@@ -976,9 +976,22 @@ structures that can be readily manipulated.
 
 =head2 new
 
-  my $pdf = PDF::Data->new;
+  my $pdf = PDF::Data->new(-compress => 1);
 
-Constructor to create an empty PDF::Data object instance.
+Constructor to create an empty PDF::Data object instance.  Any arguments
+passed to the constructor are treated as key/value pairs, and included in
+the C<$pdf> hash object returned from the constructor.  When the PDF file
+data is generated, this hash is written to the PDF file as the trailer
+dictionary.  However, hash keys starting with "-" are ignored when writing
+the PDF file, as they are considered to be flags or metadata.
+
+For example, C<$pdf->{-compress}> is a flag which controls whether or not
+streams will be compressed when generating PDF file data.  This flag can be
+set in the constructor (as shown above), or set directly on the object.
+
+The default for newly-created PDF::Data objects is B<not> to compress the
+streams, but the C<$pdf->{-compress}> flag will be automatically set when
+reading any PDF file which already contains compressed streams.
 
 =head2 clone
 
@@ -1008,7 +1021,9 @@ Append the specified page object to the end of the PDF page tree.
 
   my $pdf = PDF::Data->read_pdf($file);
 
-Read and parse a PDF file, returning a new object instance.
+Read and parse a PDF file, returning a new object instance.  If any streams
+need to be decompressed while reading the file, the C<$pdf->{-compress}> flag
+will be set automatically.
 
 =head2 write_pdf
 
@@ -1085,88 +1100,89 @@ Generate timestamp in PDF internal format.
 
   $pdf->validate;
 
-Used by new(), read_pdf() and write_pdf() to validate some parts of the PDF structure.
+Used by C<new()>, C<read_pdf()> and C<write_pdf()> to validate some parts of the
+PDF structure.
 
 =head2 validate_key
 
   $pdf->validate_key($hash, $key, $value, $label);
 
-Used by validate() to validate specific hash key values.
+Used by C<validate()> to validate specific hash key values.
 
 =head2 get_hash_node
 
   my $hash = $pdf->get_hash_node($path);
 
-Used by validate_key() to get a hash node from the PDF structure by path.
+Used by C<validate_key()> to get a hash node from the PDF structure by path.
 
 =head2 parse_objects
 
   my @objects = $pdf->parse_objects($objects, $data, $offset);
 
-Used by read_pdf() to parse PDF objects into Perl representations.
+Used by C<read_pdf()> to parse PDF objects into Perl representations.
 
 =head2 filter_stream
 
   $pdf->filter_stream($stream);
 
-Used by parse_objects() to inflate compressed streams.
+Used by C<parse_objects()> to inflate compressed streams.
 
 =head2 compress_stream
 
   $new_stream = $pdf->compress_stream($stream);
 
-Used by write_object() to compress streams if enabled.  This is controlled
-by the $pdf->{-compress} flag, which is set automatically when reading a PDF
-file with compressed streams, but must be set manually for PDF files created
-from scratch.
+Used by C<write_object()> to compress streams if enabled.  This is controlled
+by the C<$pdf->{-compress}> flag, which is set automatically when reading a
+PDF file with compressed streams, but must be set manually for PDF files
+created from scratch, either in the constructor arguments or after the fact.
 
 =head2 resolve_references
 
   $object = $pdf->resolve_references($objects, $object);
 
-Used by read_pdf() to replace parsed indirect object references with
+Used by C<read_pdf()> to replace parsed indirect object references with
 direct references to the objects in question.
 
 =head2 write_indirect_objects
 
   my $xrefs = $pdf->write_indirect_objects($pdf_file_data, $objects, $seen);
 
-Used by write_pdf() to write all indirect objects to a string of new
+Used by C<write_pdf()> to write all indirect objects to a string of new
 PDF file data.
 
 =head2 enumerate_indirect_objects
 
   $pdf->enumerate_indirect_objects($objects);
 
-Used by write_indirect_objects() to identify which objects in the PDF
+Used by C<write_indirect_objects()> to identify which objects in the PDF
 data structure need to be indirect objects.
 
 =head2 enumerate_shared_objects
 
   $pdf->enumerate_shared_objects($objects, $seen, $ancestors, $object);
 
-Used by enumerate_indirect_objects() to find objects which are already
+Used by C<enumerate_indirect_objects()> to find objects which are already
 shared (referenced from multiple objects in the PDF data structure).
 
 =head2 add_indirect_objects
 
   $pdf->add_indirect_objects($objects, @objects);
 
-Used by enumerate_indirect_objects() and enumerate_shared_objects() to
-add objects to the list of indirect objects to be written out.
+Used by C<enumerate_indirect_objects()> and C<enumerate_shared_objects()>
+to add objects to the list of indirect objects to be written out.
 
 =head2 write_object
 
   $pdf->write_object($pdf_file_data, $objects, $seen, $object, $indent);
 
-Used by write_indirect_objects(), and called by itself recursively, to
+Used by C<write_indirect_objects()>, and called by itself recursively, to
 write direct objects out to the string of new PDF file data.
 
 =head2 dump_object
 
   my $output = $pdf->dump_object($object, $label, $seen, $indent, $mode);
 
-Used by dump_pdf(), and called by itself recursively, to dump/outline
+Used by C<dump_pdf()>, and called by itself recursively, to dump/outline
 the specified PDF object.
 
 =cut
