@@ -300,7 +300,7 @@ sub merge_content_streams {
 
   # Remove extra trailing space from streams.
   foreach my $stream (@{$streams}) {
-    croak unless exists $stream->{-data};
+    croak unless is_stream $stream;
     $stream->{-data} =~ s/(?<=\s) \z//;
   }
 
@@ -578,7 +578,7 @@ sub resolve_references {
     }
 
     # For streams, validate the length metadata.
-    if (exists $object->{-data}) {
+    if (is_stream $object) {
       substr($object->{-data}, $object->{Length}) =~ s/\A\s+\z// if $object->{Length} and length($object->{-data}) > $object->{Length};
       my $len = length $object->{-data};
       $object->{Length} ||= $len;
@@ -749,7 +749,7 @@ sub write_object {
   # Check object type.
   if (is_hash $object) {
     # For streams, update length in metadata.
-    $object->{Length} = length $object->{-data} if exists $object->{-data};
+    $object->{Length} = length $object->{-data} if is_stream $object;
 
     # Dictionary object.
     ${$pdf_file_data} .= "<<\n";
@@ -769,7 +769,7 @@ sub write_object {
     ${$pdf_file_data} .= join "", " " x $indent, ">>\n";
 
     # For streams, write the stream data.
-    if (exists $object->{-data}) {
+    if (is_stream $object) {
       croak "Stream written as direct object!\n" if $indent;
       my $newline = substr($object->{-data}, -1) eq "\n" ? "" : "\n";
       ${$pdf_file_data} .= "stream\n$object->{-data}${newline}endstream\n";
@@ -823,7 +823,7 @@ sub dump_object {
     } elsif (is_hash $object) {
       # Hash object.
       $seen->{$object} = $label;
-      if (exists $object->{-data}) {
+      if (is_stream $object) {
         $output = "(STREAM)";
       } else {
         $label =~ s/(?<=\w)$/->/;
