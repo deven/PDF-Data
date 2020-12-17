@@ -772,7 +772,7 @@ sub write_object {
     # For streams, compress the stream or update the length metadata.
     if (is_stream $object) {
       if ($self->{-compress}) {
-        $object = compress_stream $object;
+        $object = $self->compress_stream($object);
       } else {
         $object->{Length} = length $object->{-data};
       }
