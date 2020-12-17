@@ -13,7 +13,7 @@ use mro;
 use namespace::autoclean;
 use Carp                qw[carp croak confess];;
 use Clone;
-use Compress::Raw::Zlib qw[:status];
+use Compress::Raw::Zlib qw[:status :flush];
 use Data::Dump          qw[dd dump];
 use List::MoreUtils     qw[minmax];
 use List::Util          qw[max];
@@ -563,15 +563,13 @@ sub compress_stream {
 
   # Return a new stream so the in-memory copy remains uncompressed to work with.
   my $new_stream = { %{$stream} };
-  my $zlib = new Compress::Raw::Zlib::Deflate(-Level => 9, -Bufsize => 65536);
-  my $status = $zlib->deflate($stream->{-data}, $new_stream->{-data});
-  if ($status == Z_OK or $status == Z_STREAM_END) {
-    $new_stream->{Length} = length $new_stream->{-data};
-    $new_stream->{Filter} = "/FlateDecode";
-    return $new_stream;
-  } else {
-    croak "Object #$stream->{-id}: Stream deflation failed! ($zlib->msg)\n";
-  }
+  $new_stream->{-data} = "";
+  my ($zlib, $status) = Compress::Raw::Zlib::Deflate->new(-Level => 9, -Bufsize => 65536, AppendOutput => 1);
+  $zlib->deflate($stream->{-data}, $new_stream->{-data}) == Z_OK or croak "Object #$stream->{-id}: Stream deflation failed! ($zlib->msg)\n";
+  $zlib->flush($new_stream->{-data}, Z_FINISH)           == Z_OK or croak "Object #$stream->{-id}: Stream deflation failed! ($zlib->msg)\n";
+  $new_stream->{Length} = length $new_stream->{-data};
+  $new_stream->{Filter} = "/FlateDecode";
+  return $new_stream;
 }
 
 # Resolve indirect object references.
