@@ -1,8 +1,8 @@
 package PDF::Data;
 
-# Require Perl v5.16; enable fatal warnings and UTF-8.
+# Require Perl v5.16; enable warnings and UTF-8.
 use v5.16;
-use warnings FATAL => 'all';
+use warnings;
 use utf8;
 
 # Declare module version.  (Also in pod documentation below.)
