@@ -395,8 +395,66 @@ sub validate {
   $self->validate_key("Root/Pages", "Type", "/Pages", "page tree root");
   $self->validate_key("Root/Pages", "Parent", undef,  "page tree root");
 
+  # Validate page tree.
+  $self->validate_page_tree("Root/Pages", $self->{Root}{Pages});
+
   # Return this instance.
   return $self;
+}
+
+# Validate page tree.
+sub validate_page_tree {
+  my ($self, $path, $hash) = @_;
+
+  # Count of leaf nodes (page objects) under this page tree node.
+  my $count = 0;
+
+  # Validate children.
+  is_array(my $kids = $hash->{Kids}) or croak "Error: $path\->{Kids} must be an array!\n";
+  for (my $i = 0; $i < @{$kids}; $i++) {
+    is_hash(my $kid = $kids->[$i]) or croak "Error: $path\[$i] must be be a hash!\n";
+    $kid->{Type} or croak "Error: $path\[$i]->{Type} is a required field!\n";
+    if ($kid->{Type} eq "/Pages") {
+      $count += $self->validate_page_tree("$path\[$i]", $kid);
+    } elsif ($kid->{Type} eq "/Page") {
+      $self->validate_page("$path\[$i]", $kid);
+      $count++;
+    } else {
+      croak "Error: $path\[$i]->{Type} must be /Pages or /Page!\n";
+    }
+  }
+
+  # Fix leaf node count if wrong.
+  if (($hash->{Count} || 0) != $count) {
+    carp "Warning: Fixing: $path->{Count} = $count\n";
+    $hash->{Count} = $count;
+  }
+}
+
+# Validate page object.
+sub validate_page {
+  my ($self, $path, $page) = @_;
+
+  if (my $contents = $page->{Contents}) {
+    if (is_array($contents)) {
+      for (my $i = 0; $i < @{$contents}; $i++) {
+        is_stream($contents->[$i]) or croak "Error: $path\->{Contents}[$i] must be a stream!\n";
+        $self->validate_content_stream("$path\->{Contents}[$i]", $contents->[$i]);
+      }
+    } elsif (is_stream($contents)) {
+      $self->validate_content_stream("$path\->{Contents}", $contents);
+    } else {
+      croak "Error: $path\->{Contents} must be an array or stream!\n";
+    }
+  }
+}
+
+sub validate_content_stream {
+  my ($self, $path, $stream) = @_;
+
+  # Make sure the content stream can be parsed.
+  my @objects = eval { $self->parse_objects({}, $stream->{-data}, 0); };
+  croak "Error: $path: $@" if $@;
 }
 
 # Validate the specified hash key value.
