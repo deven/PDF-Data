@@ -455,6 +455,122 @@ sub validate_content_stream {
   # Make sure the content stream can be parsed.
   my @objects = eval { $self->parse_objects({}, $stream->{-data}, 0); };
   croak "Error: $path: $@" if $@;
+
+  # Minify content stream if requested.
+  if ($self->{-minify}) {
+    $stream->{-data} = $self->minify_content_stream($stream, \@objects);
+    $stream->{Length} = length $stream->{-data};
+  }
+}
+
+sub minify_content_stream {
+  my ($self, $stream, $objects) = @_;
+
+  # Alias $_ to the stream data.
+  for ($stream->{-data}) {
+    # Parse object stream if necessary.
+    $objects ||= [ $self->parse_objects({}, $_, 0) ];
+
+    # Generate new content stream from objects.
+    $_ = $self->generate_content_stream($objects);
+
+    # Recalculate stream length.
+    $stream->{Length} = length $_;
+
+    # Sanity check.
+    die "Content stream serialization failed"
+      if dump([map {$_->[0]} @{$objects}]) ne
+         dump([map {$_->[0]} $self->parse_objects({}, $_, 0)]);
+  }
+}
+
+# Generate new content stream from objects.
+sub generate_content_stream {
+  my ($self, $objects) = @_;
+
+  # Generated content stream.
+  local $_ = "";
+
+  # Loop across parsed objects.
+  my $last_object;
+  foreach my $object (@{$objects}) {
+    # Check parsed object type.
+    if ($object->[1]{type} eq "dict") {
+      # Serialize dictionary.
+      $_ = $self->append_serialization($_, $self->serialize_dictionary($object->[0]));
+    } elsif ($object->[1]{type} eq "array") {
+      # Serialize array.
+      $_ = $self->append_serialization($_, $self->serialize_array($object->[0]));
+    } else {
+      # Serialize string or other token.
+      $_ = $self->append_serialization($_, $object->[0]);
+    }
+  } continue {
+    $last_object = $object;
+  }
+
+  # Return generated content stream.
+  return $_;
+}
+
+# Serialize a hash as a dictionary object.
+sub serialize_dictionary {
+  my ($self, $hash) = @_;
+
+  # Serialized dictionary.
+  local $_ = "<<";
+
+  # Serialize the hash key-value pairs.
+  my @pairs = %{$hash};
+  for (my $i = 0; $i < @pairs; $i++) {
+    if ($i % 2) {
+      my $value = is_hash ($pairs[$i]) ? $self->serialize_dictionary($pairs[$i]) :
+                  is_array($pairs[$i]) ? $self->serialize_array($pairs[$i]) : $pairs[$i];
+      $_ = $self->append_serialization($_, $value);
+    } else {
+      $_ .= "/$pairs[$i]";
+    }
+  }
+  $_ .= ">>";
+
+  # Return serialized dictionary.
+  return $_;
+}
+
+# Serialize an array.
+sub serialize_array {
+  my ($self, $array) = @_;
+
+  # Serialized array.
+  local $_ = "[";
+
+  # Serialize the array values.
+  foreach my $obj (@{$array}) {
+    my $value = is_hash ($obj) ? $self->serialize_dictionary($obj) :
+                is_array($obj) ? $self->serialize_array($obj) : $obj;
+    $_ = $self->append_serialization($_, $value);
+  }
+  $_ .= "]";
+
+  # Return serialized array.
+  return $_;
+}
+
+# Append the serialization of an object to the generated content stream.
+sub append_serialization {
+  my ($self, $stream, $object) = @_;
+
+  # Wrap the line if line length would exceed 255 characters.
+  $stream .= "\n" if length(($stream =~ /(.*)\z/)[0]) + length($object) >= 255;
+
+  # Add a space if necessary.
+  $stream .= " " unless $stream =~ /[\s)>\]}]$/ or $object =~ /^[\s()<>\[\]{}\/%]/;
+
+  # Add the serialized object.
+  $stream .= $object;
+
+  # Return the new content stream.
+  return $stream;
 }
 
 # Validate the specified hash key value.
