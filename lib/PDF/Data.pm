@@ -237,7 +237,7 @@ sub pdf_file_data {
   # Add cross-reference table.
   my $startxref   = length($pdf_file_data);
   $pdf_file_data .= sprintf "xref\n0 %d\n", scalar @{$xrefs};
-  $pdf_file_data .= join "", @{$xrefs};
+  $pdf_file_data .= join("", @{$xrefs});
 
   # Save correct size in trailer dictionary.
   $self->{Size} = scalar @{$xrefs};
@@ -247,6 +247,7 @@ sub pdf_file_data {
   $self->write_object(\$pdf_file_data, $objects, $seen, $self, 0);
 
   # Write startxref value.
+  $pdf_file_data =~ s/\n?\z/\n/;
   $pdf_file_data .= "startxref\n$startxref\n";
 
   # End of PDF file data.
@@ -305,7 +306,7 @@ sub merge_content_streams {
   }
 
   # Concatenate stream data and calculate new length.
-  my $merged = { -data => join "", map { $_->{-data}; } @{$streams} };
+  my $merged = { -data => join("", map { $_->{-data}; } @{$streams}) };
 
   # Return merged content stream.
   return $merged;
@@ -526,7 +527,7 @@ sub generate_content_stream {
   my ($self, $objects) = @_;
 
   # Generated content stream.
-  local $_ = "";
+  my $stream = "";
 
   # Loop across parsed objects.
   my $last_object;
@@ -534,80 +535,81 @@ sub generate_content_stream {
     # Check parsed object type.
     if ($object->[1]{type} eq "dict") {
       # Serialize dictionary.
-      $_ = $self->append_serialization($_, $self->serialize_dictionary($object->[0]));
+      $self->serialize_dictionary(\$stream, $object->[0]);
     } elsif ($object->[1]{type} eq "array") {
       # Serialize array.
-      $_ = $self->append_serialization($_, $self->serialize_array($object->[0]));
+      $self->serialize_array(\$stream, $object->[0]);
     } else {
       # Serialize string or other token.
-      $_ = $self->append_serialization($_, $object->[0]);
+      $self->serialize_object(\$stream, $object->[0]);
     }
   } continue {
     $last_object = $object;
   }
 
   # Return generated content stream.
-  return $_;
+  return $stream;
 }
 
 # Serialize a hash as a dictionary object.
 sub serialize_dictionary {
-  my ($self, $hash) = @_;
-
-  # Serialized dictionary.
-  local $_ = "<<";
+  my ($self, $stream, $hash) = @_;
 
   # Serialize the hash key-value pairs.
   my @pairs = %{$hash};
+  ${$stream} .= "<<";
   for (my $i = 0; $i < @pairs; $i++) {
     if ($i % 2) {
-      my $value = is_hash ($pairs[$i]) ? $self->serialize_dictionary($pairs[$i]) :
-                  is_array($pairs[$i]) ? $self->serialize_array($pairs[$i]) : $pairs[$i];
-      $_ = $self->append_serialization($_, $value);
+      if (is_hash($pairs[$i])) {
+        $self->serialize_dictionary($stream, $pairs[$i]);
+      } elsif (is_array($pairs[$i])) {
+        $self->serialize_array($stream, $pairs[$i]);
+      } else {
+        $self->serialize_object($stream, $pairs[$i]);
+      }
     } else {
-      $_ .= "/$pairs[$i]";
+      ${$stream} .= "/$pairs[$i]";
     }
   }
-  $_ .= ">>";
-
-  # Return serialized dictionary.
-  return $_;
+  ${$stream} .= ">>";
 }
 
 # Serialize an array.
 sub serialize_array {
-  my ($self, $array) = @_;
-
-  # Serialized array.
-  local $_ = "[";
+  my ($self, $stream, $array) = @_;
 
   # Serialize the array values.
+  ${$stream} .= "[";
   foreach my $obj (@{$array}) {
-    my $value = is_hash ($obj) ? $self->serialize_dictionary($obj) :
-                is_array($obj) ? $self->serialize_array($obj) : $obj;
-    $_ = $self->append_serialization($_, $value);
+    if (is_hash($obj)) {
+      $self->serialize_dictionary($stream, $obj);
+    } elsif (is_array($obj)) {
+      $self->serialize_array($stream, $obj);
+    } else {
+      $self->serialize_object($stream, $obj);
+    }
   }
-  $_ .= "]";
-
-  # Return serialized array.
-  return $_;
+  ${$stream} .= "]";
 }
 
 # Append the serialization of an object to the generated content stream.
-sub append_serialization {
+sub serialize_object {
   my ($self, $stream, $object) = @_;
 
+  # Strip leading/trailing whitespace from object if minifying.
+  if ($self->{-minify}) {
+    $object =~ s/^\s+//;
+    $object =~ s/\s+$//;
+  }
+
   # Wrap the line if line length would exceed 255 characters.
-  $stream .= "\n" if length(($stream =~ /(.*)\z/)[0]) + length($object) >= 255;
+  ${$stream} .= "\n" if length((${$stream} =~ /(.*)\z/)[0]) + length($object) >= 255;
 
   # Add a space if necessary.
-  $stream .= " " unless $stream =~ /(^|[\s)>\]}])$/ or $object =~ /^[\s()<>\[\]{}\/%]/;
+  ${$stream} .= " " unless ${$stream} =~ /(^|[\s)>\[\]{}])$/ or $object =~ /^[\s()<>\[\]{}\/%]/;
 
   # Add the serialized object.
-  $stream .= $object;
-
-  # Return the new content stream.
-  return $stream;
+  ${$stream} .= $object;
 }
 
 # Validate the specified hash key value.
@@ -693,7 +695,7 @@ sub parse_objects {
         my $type = $token eq "R" ? "reference" : "definition";
         "$id->[1]{type} $gen->[1]{type}" eq "int int"
           or croak "$id->[0] $gen->[0] $token: Invalid indirect object $type!\n";
-        my $new_id = join "-", $id->[0], $gen->[0] || ();
+        my $new_id = join("-", $id->[0], $gen->[0] || ());
         push @objects, [
           ($token eq "R" ? \$new_id : $new_id),
           { type => $token, offset => $id->[1]{offset} }
@@ -850,6 +852,7 @@ sub write_indirect_objects {
     $self->write_object($pdf_file_data, $objects, $seen, $objects->[$i], 0);
 
     # Write the indirect object trailer.
+    ${$pdf_file_data} =~ s/\n?\z/\n/;
     ${$pdf_file_data} .= "endobj\n\n";
   }
 
@@ -991,59 +994,64 @@ sub write_object {
     }
 
     # Dictionary object.
-    ${$pdf_file_data} .= "<<\n";
+    $self->serialize_object($pdf_file_data, "<<\n");
     foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
       next if $key =~ /^-/;
       my $obj = $object->{$key};
       $self->add_indirect_objects($objects, $obj) if is_stream $obj;
-      ${$pdf_file_data} .= join "", " " x ($indent + 2), "/$key ";
+      $self->serialize_object($pdf_file_data, "/$key ");
       if (not ref $obj) {
-        ${$pdf_file_data} .= "$obj\n";
+        $self->serialize_object($pdf_file_data, "$obj\n");
       } elsif ($objects->[0]{$obj}) {
-        ${$pdf_file_data} .= "$objects->[0]{$obj} 0 R\n";
+        $self->serialize_object($pdf_file_data, "$objects->[0]{$obj} 0 R\n");
       } else {
         $self->write_object($pdf_file_data, $objects, $seen, $object->{$key}, ref $object ? $indent + 2 : 0);
       }
     }
-    ${$pdf_file_data} .= join "", " " x $indent, ">>\n";
+    $self->serialize_object($pdf_file_data, ">>\n");
 
     # For streams, write the stream data.
     if (is_stream $object) {
       croak "Stream written as direct object!\n" if $indent;
       my $newline = substr($object->{-data}, -1) eq "\n" ? "" : "\n";
+      ${$pdf_file_data} =~ s/\n?\z/\n/;
       ${$pdf_file_data} .= "stream\n$object->{-data}${newline}endstream\n";
     }
   } elsif (is_array $object and not grep { ref $_; } @{$object}) {
     # Array of simple objects.
-    ${$pdf_file_data} .= "[ @{$object} ]\n";
+    if ($self->{-minify}) {
+      $self->serialize_array($pdf_file_data, $object);
+    } else {
+      ${$pdf_file_data} .= "[ @{$object} ]\n";
+    }
   } elsif (is_array $object) {
     # Array object.
-    ${$pdf_file_data} .= "[\n";
+    $self->serialize_object($pdf_file_data, "[\n");
     my $spaces = " " x ($indent + 2);
     foreach my $obj (@{$object}) {
       $self->add_indirect_objects($objects, $obj) if is_stream $obj;
-      ${$pdf_file_data} .= $spaces;
+      ${$pdf_file_data} .= $spaces unless $self->{-minify};
       if (not ref $obj) {
-        ${$pdf_file_data} .= $obj;
+        $self->serialize_object($pdf_file_data, $obj);
         $spaces = " ";
       } elsif ($objects->[0]{$obj}) {
-        ${$pdf_file_data} .= "$objects->[0]{$obj} 0 R\n";
+        $self->serialize_object($pdf_file_data, "$objects->[0]{$obj} 0 R\n");
         $spaces = " " x ($indent + 2);
       } else {
         $self->write_object($pdf_file_data, $objects, $seen, $obj, $indent + 2);
         $spaces = " " x ($indent + 2);
       }
     }
-    ${$pdf_file_data} .= "\n" if $spaces eq " ";
-    ${$pdf_file_data} .= join "", " " x $indent, "]\n";
+    ${$pdf_file_data} .= "\n" if $spaces eq " " and not $self->{-minify};
+    $self->serialize_object($pdf_file_data, join("", " " x $indent, "]\n"));
   } elsif (reftype($object) eq "SCALAR") {
     # Unresolved indirect reference.
     my ($id, $gen) = split /-/, ${$object};
     $gen ||= "0";
-    ${$pdf_file_data} .= join "", " " x $indent, "($id $gen R)\n";
+    $self->serialize_object($pdf_file_data, join("", " " x $indent, "($id $gen R)\n"));
   } else {
     # Simple object.
-    ${$pdf_file_data} .= join "", " " x $indent, "$object\n";
+    $self->serialize_object($pdf_file_data, join("", " " x $indent, "$object\n"));
   }
 }
 
@@ -1075,7 +1083,7 @@ sub dump_object {
           $output .= $self->dump_object($object->{$key}, "$label\{$key\}", $seen, ref $object ? $indent + 2 : 0, $mode) . ",\n";
         }
         if ($output) {
-          $output = join "", "{ # $label\n", $output, (" " x $indent), "}";
+          $output = join("", "{ # $label\n", $output, (" " x $indent), "}");
         } else {
           $output = "{...}";
         }
@@ -1092,7 +1100,7 @@ sub dump_object {
       if ($output =~ /\A\s+(.*?),\n\z/) {
         $output = "[... $1]";
       } elsif ($output =~ /\n/) {
-        $output = join "", "[ # $label\n", $output, (" " x $indent), "]";
+        $output = join("", "[ # $label\n", $output, (" " x $indent), "]");
       } else {
         $output = "[$output]";
       }
@@ -1128,7 +1136,7 @@ sub dump_object {
     $output =~ s/\{ \# \$pdf\n/\{\n/;
   } elsif (is_array $object and not grep { ref $_; } @{$object}) {
     # Array of simple objects.
-    $output = sprintf "[%s]", join ", ", map { /^\d+\.\d+$/ ? $_ : dump($_); } @{$object};
+    $output = sprintf "[%s]", join(", ", map { /^\d+\.\d+$/ ? $_ : dump($_); } @{$object});
   } elsif (is_array $object) {
     # Array object.
     $output .= "[ # $label\n";
