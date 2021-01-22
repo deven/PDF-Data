@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 <!-- insertion marker -->
+## [v0.9.0](https://github.com/deven/PDF-Data/releases/tag/v0.9.0) - 2021-01-22
+
+<small>[Compare with v0.1.0](https://github.com/deven/PDF-Data/compare/v0.1.0...v0.9.0)</small>
+
+### Added
+
+- Add PDF content stream minification. ([38f8830](https://github.com/deven/PDF-Data/commit/38f883072ef0da746939dd6990a9a4559eca53bf) by Deven T. Corzine).
+- Add PDF content stream validation. ([889fef2](https://github.com/deven/PDF-Data/commit/889fef20b4aa7ac9b9b97baa3797af2024187f03) by Deven T. Corzine).
+- Add support for compressing output streams. ([13810e9](https://github.com/deven/PDF-Data/commit/13810e961b9554462dcfb8d5c10eec93469f0c59) by Deven T. Corzine).
+- Add optional $time parameters for PDF output. ([eb9a935](https://github.com/deven/PDF-Data/commit/eb9a93581f3ed1c664899f24e192f88f4cf6bbc9) by Deven T. Corzine).
+- Add pdf_file_data(), rewrite write_pdf(). ([1351b84](https://github.com/deven/PDF-Data/commit/1351b84be25c29fcaa006ce1feba997bd2ad5925) by Deven T. Corzine).
+
+### Fixed
+
+- Fix the compress_stream() method. ([85f0fce](https://github.com/deven/PDF-Data/commit/85f0fcee4a8f7d58ef99d0c819e05281df9d6d77) by Deven T. Corzine).
+- Fix method call to compress streams. ([8e486fe](https://github.com/deven/PDF-Data/commit/8e486fef94ae66d4edbe8a69d001dbdd2b0e0943) by Deven T. Corzine).
+- Fix bug in pdf_file_data() mangling xref table. ([ba3ad25](https://github.com/deven/PDF-Data/commit/ba3ad255ec4e7bdc4f2475ee7892ce368a412dbf) by Deven T. Corzine).
+
+### Removed
+
+- Remove filter key from stream after decompressing. ([9113aff](https://github.com/deven/PDF-Data/commit/9113aff05629ce99a208ab344ede4a623858b909) by Deven T. Corzine).
+
 ## [v0.1.0](https://github.com/deven/PDF-Data/releases/tag/v0.1.0) - 2020-12-14
 
 <small>[Compare with v0.0.1](https://github.com/deven/PDF-Data/compare/v0.0.1...v0.1.0)</small>
