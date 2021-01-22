@@ -404,13 +404,13 @@ sub validate {
 
 # Validate page tree.
 sub validate_page_tree {
-  my ($self, $path, $hash) = @_;
+  my ($self, $path, $page_tree_node) = @_;
 
   # Count of leaf nodes (page objects) under this page tree node.
   my $count = 0;
 
   # Validate children.
-  is_array(my $kids = $hash->{Kids}) or croak "Error: $path\->{Kids} must be an array!\n";
+  is_array(my $kids = $page_tree_node->{Kids}) or croak "Error: $path\->{Kids} must be an array!\n";
   for (my $i = 0; $i < @{$kids}; $i++) {
     is_hash(my $kid = $kids->[$i]) or croak "Error: $path\[$i] must be be a hash!\n";
     $kid->{Type} or croak "Error: $path\[$i]->{Type} is a required field!\n";
@@ -424,10 +424,13 @@ sub validate_page_tree {
     }
   }
 
+  # Validate resources, if any.
+  $self->validate_resources("$path\->{Resources}", $page_tree_node->{Resources}) if is_hash($page_tree_node->{Resources});
+
   # Fix leaf node count if wrong.
-  if (($hash->{Count} || 0) != $count) {
+  if (($page_tree_node->{Count} || 0) != $count) {
     carp "Warning: Fixing: $path->{Count} = $count\n";
-    $hash->{Count} = $count;
+    $page_tree_node->{Count} = $count;
   }
 }
 
@@ -447,8 +450,47 @@ sub validate_page {
       croak "Error: $path\->{Contents} must be an array or stream!\n";
     }
   }
+
+  # Validate resources, if any.
+  $self->validate_resources("$path\->{Resources}", $page->{Resources}) if is_hash($page->{Resources});
 }
 
+# Validate resources.
+sub validate_resources {
+  my ($self, $path, $resources) = @_;
+
+  # Validate XObjects, if any.
+  $self->validate_xobjects("$path\{XObject}", $resources->{XObject}) if is_hash($resources->{XObject});
+}
+
+# Validate form XObjects.
+sub validate_xobjects {
+  my ($self, $path, $xobjects) = @_;
+
+  # Validate each form XObject.
+  foreach my $name (sort keys %{$xobjects}) {
+    $self->validate_xobject("$path\{$name}", $xobjects->{$name});
+  }
+}
+
+# Validate a single form XObject.
+sub validate_xobject {
+  my ($self, $path, $xobject) = @_;
+
+  # Make sure the form XObject is a stream.
+  is_stream($xobject) or croak "Error: $path must be a content stream!\n";
+
+  # Make sure the Subtype is set to /Form.
+  $xobject->{Subtype} eq "/Form" or croak "Error: $path\->{Subtype} must be /Form!\n";
+
+  # Validate the form XObject content stream.
+  $self->validate_content_stream($path, $xobject);
+
+  # Validate resources, if any.
+  $self->validate_resources("$path\{Resources}", $xobject->{Resources}) if is_hash($xobject->{Resources});
+}
+
+# Validate content stream.
 sub validate_content_stream {
   my ($self, $path, $stream) = @_;
 
@@ -457,31 +499,26 @@ sub validate_content_stream {
   croak "Error: $path: $@" if $@;
 
   # Minify content stream if requested.
-  if ($self->{-minify}) {
-    $stream->{-data} = $self->minify_content_stream($stream, \@objects);
-    $stream->{Length} = length $stream->{-data};
-  }
+  $self->minify_content_stream($stream, \@objects) if $self->{-minify};
 }
 
+# Minify content stream.
 sub minify_content_stream {
   my ($self, $stream, $objects) = @_;
 
-  # Alias $_ to the stream data.
-  for ($stream->{-data}) {
-    # Parse object stream if necessary.
-    $objects ||= [ $self->parse_objects({}, $_, 0) ];
+  # Parse object stream if necessary.
+  $objects ||= [ $self->parse_objects({}, $stream->{-data}, 0) ];
 
-    # Generate new content stream from objects.
-    $_ = $self->generate_content_stream($objects);
+  # Generate new content stream from objects.
+  $stream->{-data} = $self->generate_content_stream($objects);
 
-    # Recalculate stream length.
-    $stream->{Length} = length $_;
+  # Recalculate stream length.
+  $stream->{Length} = length $stream->{-data};
 
-    # Sanity check.
-    die "Content stream serialization failed"
-      if dump([map {$_->[0]} @{$objects}]) ne
-         dump([map {$_->[0]} $self->parse_objects({}, $_, 0)]);
-  }
+  # Sanity check.
+  die "Content stream serialization failed"
+    if dump([map {$_->[0]} @{$objects}]) ne
+       dump([map {$_->[0]} $self->parse_objects({}, $stream->{-data}, 0)]);
 }
 
 # Generate new content stream from objects.
@@ -564,7 +601,7 @@ sub append_serialization {
   $stream .= "\n" if length(($stream =~ /(.*)\z/)[0]) + length($object) >= 255;
 
   # Add a space if necessary.
-  $stream .= " " unless $stream =~ /[\s)>\]}]$/ or $object =~ /^[\s()<>\[\]{}\/%]/;
+  $stream .= " " unless $stream =~ /(^|[\s)>\]}])$/ or $object =~ /^[\s()<>\[\]{}\/%]/;
 
   # Add the serialized object.
   $stream .= $object;
