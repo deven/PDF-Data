@@ -765,6 +765,9 @@ sub filter_stream {
     } else {
       croak "Object #$stream->{-id}: Stream inflation failed! ($zlib->msg)\n";
     }
+
+    # Stream is no longer compressed.
+    delete $stream->{Filter};
   }
 }
 
