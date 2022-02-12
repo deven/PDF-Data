@@ -999,7 +999,7 @@ sub write_object {
       next if $key =~ /^-/;
       my $obj = $object->{$key};
       $self->add_indirect_objects($objects, $obj) if is_stream $obj;
-      $self->serialize_object($pdf_file_data, "/$key ");
+      $self->serialize_object($pdf_file_data, join("", " " x ($indent + 2), "/$key "));
       if (not ref $obj) {
         $self->serialize_object($pdf_file_data, "$obj\n");
       } elsif ($objects->[0]{$obj}) {
@@ -1008,7 +1008,7 @@ sub write_object {
         $self->write_object($pdf_file_data, $objects, $seen, $object->{$key}, ref $object ? $indent + 2 : 0);
       }
     }
-    $self->serialize_object($pdf_file_data, ">>\n");
+    $self->serialize_object($pdf_file_data, join("", " " x $indent, ">>\n"));
 
     # For streams, write the stream data.
     if (is_stream $object) {
