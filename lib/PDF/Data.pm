@@ -11,7 +11,7 @@ use version; our $VERSION = version->declare('v0.9.0');
 # Initialize modules.
 use mro;
 use namespace::autoclean;
-use Carp                qw[carp croak confess];;
+use Carp                qw[croak confess];;
 use Clone;
 use Compress::Raw::Zlib qw[:status :flush];
 use Data::Dump          qw[dd dump];
@@ -71,7 +71,7 @@ sub new_page {
   ($x, $y) = (8.5, 11) if @_ == 1;
 
   # Make sure page size was specified.
-  croak "Error: Paper size not specified!\n" unless $x and $y and $x > 0 and $y > 0;
+  croak join(": ", $self->{-file} || (), "Error: Paper size not specified!\n") unless $x and $y and $x > 0 and $y > 0;
 
   # Scale inches to default user space units (72 DPI).
   $x *= 72 if $x < 72;
@@ -136,9 +136,10 @@ sub read_pdf {
   # Check for standard input.
   if (($file // "-") eq "-") {
     # Read all data from standard input.
-    binmode STDIN or croak "stdin: $!\n";
+    $file = "<standard input>";
+    binmode STDIN or croak "$file: $!\n";
     $data = <STDIN>;
-    close STDIN or croak "stdin: $!\n";
+    close STDIN or croak "$file: $!\n";
   } else {
     # Read the entire file.
     open my $IN, '<', $file or croak "$file: $!\n";
@@ -147,9 +148,12 @@ sub read_pdf {
     close $IN or croak "$file: $!\n";
   }
 
+  # Save the filename for error messages.
+  $self->{-file} = $file;
+
   # Validate PDF file structure.
   my ($pdf_version, $startxref) = $data =~ /\A(%PDF-(1\.[0-7])$n.*$n)startxref$n(\d+)$n%%EOF$n?\z/s
-    or croak "$file: File is not a valid PDF document!\n";
+    or croak join(": ", $self->{-file} || (), "File is not a valid PDF document!\n");
 
   # Parsed indirect objects.
   my $objects = {};
@@ -163,14 +167,15 @@ sub read_pdf {
   # Find trailer dictionary.
   for (my $i = 0; $i < @objects; $i++) {
     if ($objects[$i][0] eq "trailer") {
-      $i < $#objects and $objects[$i + 1][1]{type} eq "dict" or croak "Byte offset $objects[$i][1]{offset}: Invalid trailer dictionary!\n";
+      $i < $#objects and $objects[$i + 1][1]{type} eq "dict"
+        or croak join(": ", $self->{-file} || (), "Byte offset $objects[$i][1]{offset}: Invalid trailer dictionary!\n");
       $trailer = $objects[$i + 1][0];
       last;
     }
   }
 
   # Make sure trailer dictionary was found.
-  defined $trailer or croak "$file: PDF trailer dictionary not found!\n";
+  croak join(": ", $self->{-file} || (), "PDF trailer dictionary not found!\n") unless defined $trailer;
 
   # Resolve indirect object references.
   $self->resolve_references($objects, $trailer);
@@ -198,16 +203,17 @@ sub write_pdf {
   my $pdf_data = $self->pdf_file_data($time);
 
   # Check if standard output is wanted.
-  if ($file eq "-") {
+  if (($file // "-") eq "-") {
     # Write PDF file data to standard output.
-    binmode STDOUT           or croak "<standard output>: $!\n";
-    print   STDOUT $pdf_data or croak "<standard output>: $!\n";
+    $file = "<standard output>";
+    binmode STDOUT           or croak "$file: $!\n";
+    print   STDOUT $pdf_data or croak "$file: $!\n";
   } else {
     # Write PDF file data to specified output file.
-    open my $OUT, ">", $file or croak "$file $!\n";
-    binmode $OUT             or croak "$file $!\n";
-    print   $OUT $pdf_data   or croak "$file $!\n";
-    close   $OUT             or croak "$file $!\n";
+    open my $OUT, ">", $file or croak "$file: $!\n";
+    binmode $OUT             or croak "$file: $!\n";
+    print   $OUT $pdf_data   or croak "$file: $!\n";
+    close   $OUT             or croak "$file: $!\n";
 
     # Set modification time to the specified or current timestamp, unless zero.
     utime $time, $time, $file if $time;
@@ -269,8 +275,8 @@ sub pdf_file_data {
 sub dump_pdf {
   my ($self, $file, $mode) = @_;
 
-  # Use "stdout" instead of "-" to describe standard input.
-  my $filename = $file =~ s/^-$/stdout/r;
+  # Use "<standard output>" instead of "-" to describe standard output.
+  my $filename = $file =~ s/^-$/<standard output>/r;
 
   # Open output file.
   open my $OUT, ">$file" or croak "$filename: $!\n";
@@ -414,7 +420,7 @@ sub validate {
   if ($@) {
     # Turn errors into warnings if -novalidate flag is set.
     if ($self->{-novalidate}) {
-      carp $@;
+      warn $@;
     } else {
       croak $@;
     }
@@ -432,17 +438,17 @@ sub validate_page_tree {
   my $count = 0;
 
   # Validate children.
-  is_array(my $kids = $page_tree_node->{Kids}) or croak "Error: $path\->{Kids} must be an array!\n";
+  is_array(my $kids = $page_tree_node->{Kids}) or croak join(": ", $self->{-file} || (), "Error: $path\->{Kids} must be an array!\n");
   for (my $i = 0; $i < @{$kids}; $i++) {
-    is_hash(my $kid = $kids->[$i]) or croak "Error: $path\[$i] must be be a hash!\n";
-    $kid->{Type} or croak "Error: $path\[$i]->{Type} is a required field!\n";
+    is_hash(my $kid = $kids->[$i]) or croak join(": ", $self->{-file} || (), "Error: $path\[$i] must be be a hash!\n");
+    $kid->{Type} or croak join(": ", $self->{-file} || (), "Error: $path\[$i]->{Type} is a required field!\n");
     if ($kid->{Type} eq "/Pages") {
       $count += $self->validate_page_tree("$path\[$i]", $kid);
     } elsif ($kid->{Type} eq "/Page") {
       $self->validate_page("$path\[$i]", $kid);
       $count++;
     } else {
-      croak "Error: $path\[$i]->{Type} must be /Pages or /Page!\n";
+      croak join(": ", $self->{-file} || (), "Error: $path\[$i]->{Type} must be /Pages or /Page!\n");
     }
   }
 
@@ -451,7 +457,7 @@ sub validate_page_tree {
 
   # Fix leaf node count if wrong.
   if (($page_tree_node->{Count} || 0) != $count) {
-    carp "Warning: Fixing: $path->{Count} = $count\n";
+    warn join(": ", $self->{-file} || (), "Warning: Fixing: $path->{Count} = $count\n");
     $page_tree_node->{Count} = $count;
   }
 }
@@ -463,13 +469,13 @@ sub validate_page {
   if (my $contents = $page->{Contents}) {
     if (is_array($contents)) {
       for (my $i = 0; $i < @{$contents}; $i++) {
-        is_stream($contents->[$i]) or croak "Error: $path\->{Contents}[$i] must be a stream!\n";
+        is_stream($contents->[$i]) or croak join(": ", $self->{-file} || (), "Error: $path\->{Contents}[$i] must be a stream!\n");
         $self->validate_content_stream("$path\->{Contents}[$i]", $contents->[$i]);
       }
     } elsif (is_stream($contents)) {
       $self->validate_content_stream("$path\->{Contents}", $contents);
     } else {
-      croak "Error: $path\->{Contents} must be an array or stream!\n";
+      croak join(": ", $self->{-file} || (), "Error: $path\->{Contents} must be an array or stream!\n");
     }
   }
 
@@ -500,10 +506,10 @@ sub validate_xobject {
   my ($self, $path, $xobject) = @_;
 
   # Make sure the form XObject is a stream.
-  is_stream($xobject) or croak "Error: $path must be a content stream!\n";
+  is_stream($xobject) or croak join(": ", $self->{-file} || (), "Error: $path must be a content stream!\n");
 
   # Make sure the Subtype is set to /Form.
-  $xobject->{Subtype} eq "/Form" or croak "Error: $path\->{Subtype} must be /Form!\n";
+  $xobject->{Subtype} eq "/Form" or croak join(": ", $self->{-file} || (), "Error: $path\->{Subtype} must be /Form!\n");
 
   # Validate the form XObject content stream.
   $self->validate_content_stream($path, $xobject);
@@ -518,7 +524,7 @@ sub validate_content_stream {
 
   # Make sure the content stream can be parsed.
   my @objects = eval { $self->parse_objects({}, $stream->{-data}, 0); };
-  croak "Error: $path: $@" if $@;
+  croak join(": ", $self->{-file} || (), "Error: $path: $@") if $@;
 
   # Minify content stream if requested.
   $self->minify_content_stream($stream, \@objects) if $self->{-minify};
@@ -645,10 +651,10 @@ sub validate_key {
 
   # Make sure the hash key has the correct value.
   if (defined $value and (not defined $hash->{$key} or $hash->{$key} ne $value)) {
-    carp "Warning: Fixing $label: {$key} $hash->{$key} -> $value\n" if $hash->{$key};
+    warn join(": ", $self->{-file} || (), "Warning: Fixing $label: {$key} $hash->{$key} -> $value\n") if $hash->{$key};
     $hash->{$key} = $value;
   } elsif (not defined $value and exists $hash->{$key}) {
-    carp "Warning: Deleting $label: {$key} $hash->{$key}\n" if $hash->{$key};
+    warn join(": ", $self->{-file} || (), "Warning: Deleting $label: {$key} $hash->{$key}\n") if $hash->{$key};
     delete $hash->{$key};
   }
 
@@ -699,7 +705,7 @@ sub parse_objects {
       my @pairs = $self->parse_objects($objects, $2, $offset);
       for (my $i = 0; $i < @pairs; $i++) {
         $pairs[$i] = $i % 2 ? $pairs[$i][0] : $pairs[$i][1]{name}
-          // croak "Byte offset $offset: Dictionary key is not a name!\n";
+          // croak join(": ", $self->{-file} || (), "Byte offset $offset: Dictionary key is not a name!\n");
       }
       push @objects, [ { @pairs }, { type => "dict" } ];
     } elsif (s/\A(\[((?:(?>[^\[\]]+)|(?1))*)\])//) {                            # Array: [...] (including nested arrays)
@@ -716,7 +722,7 @@ sub parse_objects {
         my ($id, $gen) = splice @objects, -2;
         my $type = $token eq "R" ? "reference" : "definition";
         "$id->[1]{type} $gen->[1]{type}" eq "int int"
-          or croak "Byte offset $offset: $id->[0] $gen->[0] $token: Invalid indirect object $type!\n";
+          or croak join(": ", $self->{-file} || (), "Byte offset $offset: $id->[0] $gen->[0] $token: Invalid indirect object $type!\n");
         my $new_id = join("-", $id->[0], $gen->[0] || ());
         push @objects, [
           ($token eq "R" ? \$new_id : $new_id),
@@ -724,29 +730,29 @@ sub parse_objects {
         ];
       } elsif ($token eq "stream") {                                            # Stream content: stream ... endstream
         my ($id, $stream) = @objects[-2,-1];
-        $stream->[1]{type} eq "dict" or croak "Byte offset $offset: Stream dictionary missing!\n";
-        $id->[1]{type} eq "obj" or croak "Byte offset $offset: Invalid indirect object definition!\n";
+        $stream->[1]{type} eq "dict" or croak join(": ", $self->{-file} || (), "Byte offset $offset: Stream dictionary missing!\n");
+        $id->[1]{type} eq "obj" or croak join(": ", $self->{-file} || (), "Byte offset $offset: Invalid indirect object definition!\n");
         $_ = $_->[0] for $id, $stream;
         defined(my $length = $stream->{Length})
-          or carp "Byte offset $offset: Object #$id: Stream length not found in metadata!\n";
+          or warn join(": ", $self->{-file} || (), "Byte offset $offset: Object #$id: Stream length not found in metadata!\n");
         $length //= 0;
         s/\A\r?\n(.{$length})\s*endstream$ws//s
           or s/\A\r?\n((?>(?:[^e]+|(?!endstream\s)e)*))\s*endstream$ws//s
-          or croak "Byte offset $offset: Invalid stream definition!\n";
+          or croak join(": ", $self->{-file} || (), "Byte offset $offset: Invalid stream definition!\n");
         $stream->{-data}    = $1;
         $stream->{-id}      = $id;
         $stream->{Length} //= length $1;
         $self->filter_stream($stream) if $stream->{Filter};
       } elsif ($token eq "endobj") {                                            # Indirect object definition: 999 0 obj ... endobj
         my ($id, $object) = splice @objects, -2;
-        $id->[1]{type} eq "obj" or croak "Byte offset $offset: Invalid indirect object definition!\n";
+        $id->[1]{type} eq "obj" or croak join(": ", $self->{-file} || (), "Byte offset $offset: Invalid indirect object definition!\n");
         $object->[1]{id} = $id->[0];
         $objects->{$id->[0]} = $object;
         $objects->{offset}{$object->[1]{offset} // $offset} = $object;
         push @objects, $object;
       } elsif ($token eq "xref") {                                              # Cross-reference table
         s/\A$ws\d+$ws\d+$n(?>\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))+//
-          or croak "Byte offset $offset: Invalid cross-reference table!\n";
+          or croak join(": ", $self->{-file} || (), "Byte offset $offset: Invalid cross-reference table!\n");
       } elsif ($token =~ /^[+-]?\d+$/) {                                        # Integer: [+-]999
         push @objects, [ $token, { type => "int" } ];
       } elsif ($token =~ /^[+-]?(?:\d+\.\d*|\.\d+)$/) {                         # Real number: [+-]999.999
@@ -760,7 +766,7 @@ sub parse_objects {
       }
     } else {
       s/\A([^\r\n]*).*\z/$1/s;
-      croak "Byte offset $offset: Parse error on input: \"$_\"\n";
+      croak join(": ", $self->{-file} || (), "Byte offset $offset: Parse error on input: \"$_\"\n");
     }
 
     # Update offset/length of last object.
@@ -792,7 +798,7 @@ sub filter_stream {
       $stream->{-data}  = $output;
       $stream->{Length} = length $output;
     } else {
-      croak "Object #$stream->{-id}: Stream inflation failed! ($zlib->msg)\n";
+      croak join(": ", $self->{-file} || (), "Object #$stream->{-id}: Stream inflation failed! ($zlib->msg)\n");
     }
 
     # Stream is no longer compressed; remove /FlateDecode filter.
@@ -820,8 +826,8 @@ sub compress_stream {
   my $new_stream = { %{$stream} };
   $new_stream->{-data} = "";
   my ($zlib, $status) = Compress::Raw::Zlib::Deflate->new(-Level => 9, -Bufsize => 65536, AppendOutput => 1);
-  $zlib->deflate($stream->{-data}, $new_stream->{-data}) == Z_OK or croak "Object #$stream->{-id}: Stream deflation failed! ($zlib->msg)\n";
-  $zlib->flush($new_stream->{-data}, Z_FINISH)           == Z_OK or croak "Object #$stream->{-id}: Stream deflation failed! ($zlib->msg)\n";
+  $zlib->deflate($stream->{-data}, $new_stream->{-data}) == Z_OK or croak join(": ", $self->{-file} || (), "Object #$stream->{-id}: Stream deflation failed! ($zlib->msg)\n");
+  $zlib->flush($new_stream->{-data}, Z_FINISH)           == Z_OK or croak join(": ", $self->{-file} || (), "Object #$stream->{-id}: Stream deflation failed! ($zlib->msg)\n");
   $new_stream->{Length} = length $new_stream->{-data};
   $new_stream->{Filter} = @filters ? ["/FlateDecode", @filters] : "/FlateDecode";
   return $new_stream;
@@ -840,7 +846,7 @@ sub resolve_references {
     } else {
       ($id, my $gen) = split /-/, $id;
       $gen ||= "0";
-      carp "Warning: $id $gen R: Referenced indirect object not found!\n";
+      warn join(": ", $self->{-file} || (), "Warning: $id $gen R: Referenced indirect object not found!\n");
     }
   }
 
@@ -856,7 +862,8 @@ sub resolve_references {
       substr($object->{-data}, $object->{Length}) =~ s/\A\s+\z// if $object->{Length} and length($object->{-data}) > $object->{Length};
       my $len = length $object->{-data};
       $object->{Length} ||= $len;
-      $len == $object->{Length} or carp "Warning: Object #$object->{-id}: Stream length does not match metadata! ($len != $object->{Length})\n";
+      $len == $object->{Length}
+        or warn join(": ", $self->{-file} || (), "Warning: Object #$object->{-id}: Stream length does not match metadata! ($len != $object->{Length})\n");
     }
   } elsif (is_array $object) {
     # Resolve references in array values.
@@ -1018,7 +1025,7 @@ sub write_object {
 
   # Make sure the same object isn't written twice.
   if (ref $object and $seen->{$object}++) {
-    croak "Object $object written more than once!\n";
+    croak join(": ", $self->{-file} || (), "Object $object written more than once!\n");
   }
 
   # Check object type.
@@ -1051,7 +1058,7 @@ sub write_object {
 
     # For streams, write the stream data.
     if (is_stream $object) {
-      croak "Stream written as direct object!\n" if $indent;
+      croak join(": ", $self->{-file} || (), "Stream written as direct object!\n") if $indent;
       my $newline = substr($object->{-data}, -1) eq "\n" ? "" : "\n";
       ${$pdf_file_data} =~ s/\n?\z/\n/;
       ${$pdf_file_data} .= "stream\n$object->{-data}${newline}endstream\n";
