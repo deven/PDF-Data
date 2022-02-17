@@ -694,7 +694,7 @@ sub parse_objects {
         my ($id, $gen) = splice @objects, -2;
         my $type = $token eq "R" ? "reference" : "definition";
         "$id->[1]{type} $gen->[1]{type}" eq "int int"
-          or croak "$id->[0] $gen->[0] $token: Invalid indirect object $type!\n";
+          or croak "Byte offset $offset: $id->[0] $gen->[0] $token: Invalid indirect object $type!\n";
         my $new_id = join("-", $id->[0], $gen->[0] || ());
         push @objects, [
           ($token eq "R" ? \$new_id : $new_id),
@@ -702,27 +702,27 @@ sub parse_objects {
         ];
       } elsif ($token eq "stream") {                                            # Stream content: stream ... endstream
         my ($id, $stream) = @objects[-2,-1];
-        $stream->[1]{type} eq "dict" or croak "Stream dictionary missing!\n";
-        $id->[1]{type} eq "obj" or croak "Invalid indirect object definition!\n";
+        $stream->[1]{type} eq "dict" or croak "Byte offset $offset: Stream dictionary missing!\n";
+        $id->[1]{type} eq "obj" or croak "Byte offset $offset: Invalid indirect object definition!\n";
         $_ = $_->[0] for $id, $stream;
         defined $stream->{Length}
-          or carp "Object #$id: Stream length not found in metadata!\n";
+          or carp "Byte offset $offset: Object #$id: Stream length not found in metadata!\n";
         s/\A$n((?>(?!endstream\s)[^\r\n]*$n)*)endstream$ws//
-          or croak "Invalid stream definition!\n";
+          or croak "Byte offset $offset: Invalid stream definition!\n";
         $stream->{-data}    = $1;
         $stream->{-id}      = $id;
         $stream->{Length} //= length $1;
         $self->filter_stream($stream) if $stream->{Filter};
       } elsif ($token eq "endobj") {                                            # Indirect object definition: 999 0 obj ... endobj
         my ($id, $object) = splice @objects, -2;
-        $id->[1]{type} eq "obj" or croak "Invalid indirect object definition!\n";
+        $id->[1]{type} eq "obj" or croak "Byte offset $offset: Invalid indirect object definition!\n";
         $object->[1]{id} = $id->[0];
         $objects->{$id->[0]} = $object;
         $objects->{offset}{$object->[1]{offset} // $offset} = $object;
         push @objects, $object;
       } elsif ($token eq "xref") {                                              # Cross-reference table
         s/\A$ws\d+$ws\d+$n(?>\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))+//
-          or croak "Invalid cross-reference table!\n";
+          or croak "Byte offset $offset: Invalid cross-reference table!\n";
       } elsif ($token =~ /^[+-]?\d+$/) {                                        # Integer: [+-]999
         push @objects, [ $token, { type => "int" } ];
       } elsif ($token =~ /^[+-]?(?:\d+\.\d*|\.\d+)$/) {                         # Real number: [+-]999.999
