@@ -726,9 +726,11 @@ sub parse_objects {
         $stream->[1]{type} eq "dict" or croak "Byte offset $offset: Stream dictionary missing!\n";
         $id->[1]{type} eq "obj" or croak "Byte offset $offset: Invalid indirect object definition!\n";
         $_ = $_->[0] for $id, $stream;
-        defined $stream->{Length}
+        defined(my $length = $stream->{Length})
           or carp "Byte offset $offset: Object #$id: Stream length not found in metadata!\n";
-        s/\A$n((?>(?!endstream\s)[^\r\n]*$n)*)endstream$ws//
+        $length //= 0;
+        s/\A\r?\n(.{$length})\s*endstream$ws//s
+          or s/\A\r?\n((?>(?:[^e]+|(?!endstream\s)e)*))\s*endstream$ws//s
           or croak "Byte offset $offset: Invalid stream definition!\n";
         $stream->{-data}    = $1;
         $stream->{-id}      = $id;
