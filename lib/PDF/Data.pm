@@ -775,8 +775,11 @@ sub parse_objects {
 sub filter_stream {
   my ($self, $stream) = @_;
 
+  # Get stream filters, if any.
+  my @filters = $stream->{Filter} ? is_array $stream->{Filter} ? @{$stream->{Filter}} : ($stream->{Filter}) : ();
+
   # Decompress stream data if necessary.
-  if ($stream->{Filter} eq "/FlateDecode") {
+  if ($filters[0] eq "/FlateDecode") {
     # Remember that this PDF file is using compressed streams.
     my $self->{-compress} = 1;
 
@@ -791,14 +794,26 @@ sub filter_stream {
       croak "Object #$stream->{-id}: Stream inflation failed! ($zlib->msg)\n";
     }
 
-    # Stream is no longer compressed.
-    delete $stream->{Filter};
+    # Stream is no longer compressed; remove /FlateDecode filter.
+    shift @filters;
+
+    # Preserve remaining filters, if any.
+    if (@filters > 1) {
+      $stream->{Filter} = \@filters;
+    } elsif (@filters) {
+      $stream->{Filter} = shift @filters;
+    } else {
+      delete $stream->{Filter};
+    }
   }
 }
 
 # Compress stream data.
 sub compress_stream {
   my ($self, $stream) = @_;
+
+  # Get stream filters, if any.
+  my @filters = $stream->{Filter} ? is_array $stream->{Filter} ? @{$stream->{Filter}} : ($stream->{Filter}) : ();
 
   # Return a new stream so the in-memory copy remains uncompressed to work with.
   my $new_stream = { %{$stream} };
@@ -807,7 +822,7 @@ sub compress_stream {
   $zlib->deflate($stream->{-data}, $new_stream->{-data}) == Z_OK or croak "Object #$stream->{-id}: Stream deflation failed! ($zlib->msg)\n";
   $zlib->flush($new_stream->{-data}, Z_FINISH)           == Z_OK or croak "Object #$stream->{-id}: Stream deflation failed! ($zlib->msg)\n";
   $new_stream->{Length} = length $new_stream->{-data};
-  $new_stream->{Filter} = "/FlateDecode";
+  $new_stream->{Filter} = @filters ? ["/FlateDecode", @filters] : "/FlateDecode";
   return $new_stream;
 }
 
