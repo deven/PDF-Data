@@ -121,12 +121,6 @@ sub append_page {
 sub read_pdf {
   my ($self, $file, %args) = @_;
 
-  # Get the class name.
-  my $class = blessed $self || $self;
-
-  # Create a new instance using the provided arguments.
-  $self = bless \%args, $class;
-
   # Read entire file at once.
   local $/;
 
@@ -148,8 +142,19 @@ sub read_pdf {
     close $IN or croak "$file: $!\n";
   }
 
-  # Save the filename for error messages.
-  $self->{-file} = $file;
+  # Parse PDF file data and return new instance.
+  return $self->parse_pdf($data, -file => $file, %args);
+}
+
+# Parse PDF file data.
+sub parse_pdf {
+  my ($self, $data, %args) = @_;
+
+  # Get the class name.
+  my $class = blessed $self || $self;
+
+  # Create a new instance using the provided arguments.
+  $self = bless \%args, $class;
 
   # Validate PDF file structure.
   my ($pdf_version, $startxref) = $data =~ /\A(%PDF-(1\.[0-7])$n.*$n)startxref$n(\d+)$n%%EOF$n?\z/s
@@ -1287,12 +1292,22 @@ Append the specified page object to the end of the PDF page tree.
 
 =head2 read_pdf
 
-  my $pdf = PDF::Data->read_pdf($file);
+  my $pdf = PDF::Data->read_pdf($file, %args);
 
-Read and parse a PDF file, returning a new object instance.  If any streams
-need to be decompressed while reading the file, those streams will also be
-recompressed automatically when generating PDF file data, unless the
-C<$pdf->{-compress}> flag has been set to a false value.
+Read a PDF file and parse it with C<$pdf->parse_pdf()>, returning a new
+object instance.  Any streams compressed with the /FlateDecode filter
+will be automatically decompressed.  Unless the C<$pdf->{-decompress}>
+flag is set, the same streams will also be automatically recompressed
+again when generating PDF file data.
+
+=head2 parse_pdf
+
+  my $pdf = PDF::Data->parse_pdf($data, %args);
+
+Used by C<$pdf->read_pdf()> to parse the raw PDF file data and create
+a new object instance.  This method can also be called directly instead
+of calling C<$pdf->read_pdf()> if the PDF file data comes another source
+instead of a regular file.
 
 =head2 write_pdf
 
@@ -1369,8 +1384,8 @@ Generate timestamp in PDF internal format.
 
   $pdf->validate;
 
-Used by C<new()>, C<read_pdf()> and C<write_pdf()> to validate some parts of the
-PDF structure.
+Used by C<new()>, C<parse_pdf()> and C<write_pdf()> to validate some parts of
+the PDF structure.
 
 =head2 validate_key
 
@@ -1388,7 +1403,7 @@ Used by C<validate_key()> to get a hash node from the PDF structure by path.
 
   my @objects = $pdf->parse_objects($objects, $data, $offset);
 
-Used by C<read_pdf()> to parse PDF objects into Perl representations.
+Used by C<parse_pdf()> to parse PDF objects into Perl representations.
 
 =head2 filter_stream
 
@@ -1409,7 +1424,7 @@ created from scratch, either in the constructor arguments or after the fact.
 
   $object = $pdf->resolve_references($objects, $object);
 
-Used by C<read_pdf()> to replace parsed indirect object references with
+Used by C<parse_pdf()> to replace parsed indirect object references with
 direct references to the objects in question.
 
 =head2 write_indirect_objects
