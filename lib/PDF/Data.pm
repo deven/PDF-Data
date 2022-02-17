@@ -781,9 +781,6 @@ sub filter_stream {
 
   # Decompress stream data if necessary.
   if ($filters[0] eq "/FlateDecode") {
-    # Remember that this PDF file is using compressed streams, unless -compress flag is already set.
-    $self->{-compress} //= 1;
-
     # Remember that this stream was compressed.
     $stream->{-compress} = 1;
 
