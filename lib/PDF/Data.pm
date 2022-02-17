@@ -309,7 +309,7 @@ sub merge_content_streams {
 
   # Remove extra trailing space from streams.
   foreach my $stream (@{$streams}) {
-    croak unless is_stream $stream;
+    die unless is_stream $stream;
     $stream->{-data} =~ s/(?<=\s) \z//;
   }
 
@@ -698,7 +698,8 @@ sub parse_objects {
     } elsif (s/\A(<<((?:[^<>]+|<[^<>]+>|(?1))*)$ws?>>)//) {                     # Dictionary: <<...>> (including nested dictionaries)
       my @pairs = $self->parse_objects($objects, $2, $offset);
       for (my $i = 0; $i < @pairs; $i++) {
-        $pairs[$i] = $i % 2 ? $pairs[$i][0] : $pairs[$i][1]{name} // croak;
+        $pairs[$i] = $i % 2 ? $pairs[$i][0] : $pairs[$i][1]{name}
+          // croak "Byte offset $offset: Dictionary key is not a name!\n";
       }
       push @objects, [ { @pairs }, { type => "dict" } ];
     } elsif (s/\A(\[((?:(?>[^\[\]]+)|(?1))*)\])//) {                            # Array: [...] (including nested arrays)
