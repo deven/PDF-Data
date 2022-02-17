@@ -119,10 +119,13 @@ sub append_page {
 
 # Read and parse PDF file.
 sub read_pdf {
-  my ($class, $file) = @_;
+  my ($self, $file, %args) = @_;
 
-  # Get class name if called as an instance method.
-  $class = blessed $class if blessed $class;
+  # Get the class name.
+  my $class = blessed $self || $self;
+
+  # Create a new instance using the provided arguments.
+  $self = bless \%args, $class;
 
   # Read entire file at once.
   local $/;
@@ -152,7 +155,7 @@ sub read_pdf {
   my $objects = {};
 
   # Parse PDF objects.
-  my @objects = $class->parse_objects($objects, $data, 0);
+  my @objects = $self->parse_objects($objects, $data, 0);
 
   # PDF trailer dictionary.
   my $trailer;
@@ -170,10 +173,15 @@ sub read_pdf {
   defined $trailer or croak "$file: PDF trailer dictionary not found!\n";
 
   # Resolve indirect object references.
-  $class->resolve_references($objects, $trailer);
+  $self->resolve_references($objects, $trailer);
 
   # Create a new instance from the parsed data.
   my $pdf = bless $trailer, $class;
+
+  # Add any provided arguments.
+  foreach my $key (sort keys %args) {
+    $pdf->{$key} = $args{$key};
+  }
 
   # Validate the PDF structure and return the new instance.
   return $pdf->validate;
@@ -389,15 +397,28 @@ sub timestamp {
 sub validate {
   my ($self) = @_;
 
-  # Make sure document catalog exists and has the correct type.
-  $self->validate_key("Root", "Type", "/Catalog", "document catalog");
+  # Catch validation errors.
+  eval {
+    # Make sure document catalog exists and has the correct type.
+    $self->validate_key("Root", "Type", "/Catalog", "document catalog");
 
-  # Make sure page tree root node exists, has the correct type, and has no parent.
-  $self->validate_key("Root/Pages", "Type", "/Pages", "page tree root");
-  $self->validate_key("Root/Pages", "Parent", undef,  "page tree root");
+    # Make sure page tree root node exists, has the correct type, and has no parent.
+    $self->validate_key("Root/Pages", "Type", "/Pages", "page tree root");
+    $self->validate_key("Root/Pages", "Parent", undef,  "page tree root");
 
-  # Validate page tree.
-  $self->validate_page_tree("Root/Pages", $self->{Root}{Pages});
+    # Validate page tree.
+    $self->validate_page_tree("Root/Pages", $self->{Root}{Pages});
+  };
+
+  # Check for validation errors.
+  if ($@) {
+    # Turn errors into warnings if -novalidate flag is set.
+    if ($self->{-novalidate}) {
+      carp $@;
+    } else {
+      croak $@;
+    }
+  }
 
   # Return this instance.
   return $self;
