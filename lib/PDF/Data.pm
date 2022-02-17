@@ -1044,7 +1044,7 @@ sub write_object {
   if (is_hash $object) {
     # For streams, compress the stream or update the length metadata.
     if (is_stream $object) {
-      if ($self->{-compress} // $object->{-compress}) {
+      if (($self->{-compress} or $object->{-compress}) and not ($self->{-decompress} or $object->{-decompress})) {
         $object = $self->compress_stream($object);
       } else {
         $object->{Length} = length $object->{-data};
@@ -1254,7 +1254,7 @@ structures that can be readily manipulated.
 
 =head2 new
 
-  my $pdf = PDF::Data->new(-compress => 1);
+  my $pdf = PDF::Data->new(-compress => 1, -minify => 1);
 
 Constructor to create an empty PDF::Data object instance.  Any arguments
 passed to the constructor are treated as key/value pairs, and included in
@@ -1267,11 +1267,11 @@ For example, C<$pdf->{-compress}> is a flag which controls whether or not
 streams will be compressed when generating PDF file data.  This flag can be
 set in the constructor (as shown above), or set directly on the object.
 
-Compressed streams read from an existing PDF file will be decompressed
-automatically, and recompressed again when generating PDF file data.
-Setting C<$pdf->{-compress}> to a false value will prevent such streams
-from being recompressed.  Setting C<$pdf->{-compress}> to a true value will
-compress all streams when generating PDF file data.
+The C<$pdf->{-minify}> flag controls whether or not to save space in the
+generated PDF file data by removing comments and extra whitespace from
+content streams.  This flag can be used along with C<$pdf->{-compress}>
+to make the generated PDF file data even smaller, but this transformation
+is not reversible.
 
 =head2 clone
 
