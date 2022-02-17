@@ -242,6 +242,9 @@ sub pdf_file_data {
   # Set PDF modification timestamp, unless zero.
   $self->{Info}{ModDate} = $self->timestamp($time) if $time;
 
+  # Set PDF producer.
+  $self->{Info}{Producer} = sprintf "(%s)", join " ", __PACKAGE__, $VERSION;
+
   # Validate the PDF structure.
   $self->validate;
 
