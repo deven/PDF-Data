@@ -157,8 +157,12 @@ sub parse_pdf {
   $self = bless \%args, $class;
 
   # Validate PDF file structure.
-  my ($pdf_version, $startxref) = $data =~ /\A(%PDF-(1\.[0-7])$n.*$n)startxref$n(\d+)$n%%EOF$n?\z/s
+  my ($pdf_version, $startxref) = $data =~ /\A(?:%PDF-(\d+\.\d+)$n.*$n)startxref$n(\d+)$n%%EOF$n?\z/s
     or croak join(": ", $self->{-file} || (), "File is not a valid PDF document!\n");
+
+  # Check PDF version.
+  warn join(": ", $self->{-file} || (), "Warning: PDF version $pdf_version not supported!\n")
+    unless $pdf_version =~ /^1\.[0-7]$/;
 
   # Parsed indirect objects.
   my $objects = {};
