@@ -783,6 +783,9 @@ sub filter_stream {
     # Remember that this PDF file is using compressed streams, unless -compress flag is already set.
     $self->{-compress} //= 1;
 
+    # Remember that this stream was compressed.
+    $stream->{-compress} = 1;
+
     # Decompress the stream.
     my $zlib = new Compress::Raw::Zlib::Inflate;
     my $output;
@@ -1024,7 +1027,7 @@ sub write_object {
   if (is_hash $object) {
     # For streams, compress the stream or update the length metadata.
     if (is_stream $object) {
-      if ($self->{-compress}) {
+      if ($self->{-compress} // $object->{-compress}) {
         $object = $self->compress_stream($object);
       } else {
         $object->{Length} = length $object->{-data};
@@ -1247,9 +1250,11 @@ For example, C<$pdf->{-compress}> is a flag which controls whether or not
 streams will be compressed when generating PDF file data.  This flag can be
 set in the constructor (as shown above), or set directly on the object.
 
-The default for newly-created PDF::Data objects is B<not> to compress the
-streams, but the C<$pdf->{-compress}> flag will be automatically set when
-reading any PDF file which already contains compressed streams.
+Compressed streams read from an existing PDF file will be decompressed
+automatically, and recompressed again when generating PDF file data.
+Setting C<$pdf->{-compress}> to a false value will prevent such streams
+from being recompressed.  Setting C<$pdf->{-compress}> to a true value will
+compress all streams when generating PDF file data.
 
 =head2 clone
 
@@ -1280,8 +1285,9 @@ Append the specified page object to the end of the PDF page tree.
   my $pdf = PDF::Data->read_pdf($file);
 
 Read and parse a PDF file, returning a new object instance.  If any streams
-need to be decompressed while reading the file, the C<$pdf->{-compress}> flag
-will be set automatically.
+need to be decompressed while reading the file, those streams will also be
+recompressed automatically when generating PDF file data, unless the
+C<$pdf->{-compress}> flag has been set to a false value.
 
 =head2 write_pdf
 
