@@ -790,6 +790,20 @@ sub parse_objects {
   return @objects;
 }
 
+# Parse PDF objects from standalone PDF data.
+sub parse_data {
+  my ($self, $data) = @_;
+
+  # Parse PDF objects from data.
+  my @objects = $self->parse_objects({}, $data // "", 0);
+
+  # Discard parser metadata.
+  @objects = map { $_->[0]; } @objects;
+
+  # Return parsed objects.
+  return wantarray ? @objects : $objects[0];
+}
+
 # Filter stream data.
 sub filter_stream {
   my ($self, $stream) = @_;
@@ -1411,6 +1425,12 @@ Used by C<validate_key()> to get a hash node from the PDF structure by path.
   my @objects = $pdf->parse_objects($objects, $data, $offset);
 
 Used by C<parse_pdf()> to parse PDF objects into Perl representations.
+
+=head2 parse_content
+
+  my @objects = $pdf->parse_data($data);
+
+Uses C<parse_objects()> to parse PDF objects from standalone PDF data.
 
 =head2 filter_stream
 
