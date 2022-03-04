@@ -380,13 +380,12 @@ sub find_bbox {
   return unless $new;
 
   # Update content stream.
-  my $xy = "%.12g %.12g";
   for ($content_stream) {
     # Update coordinates in drawing operations.
-    s/^($n) ($n) ([ml])$/sprintf "$xy %s", $1 - $left, $2 - $bottom, $3/egm;
-    s/^($n) ($n) ($n) ($n) ([vy])$/sprintf "$xy $xy %s", $1 - $left, $2 - $bottom, $3 - $left, $4 - $bottom, $5/egm;
-    s/^($n) ($n) ($n) ($n) ($n) ($n) (c)$/sprintf "$xy $xy $xy %s", $1 - $left, $2 - $bottom, $3 - $left, $4 - $bottom, $5 - $left, $6 - $bottom, $7/egm;
-    s/^($n $n $n $n) ($n) ($n) (cm)$/sprintf "%s $xy %s", $1, $2 - $left, $3 - $bottom, $4/egm;
+    s/^($n) ($n) ([ml])$/join " ", $self->round($1 - $left, $2 - $bottom), $3/egm;
+    s/^($n) ($n) ($n) ($n) ([vy])$/join " ", $self->round($1 - $left, $2 - $bottom, $3 - $left, $4 - $bottom), $5/egm;
+    s/^($n) ($n) ($n) ($n) ($n) ($n) (c)$/join " ", $self->round($1 - $left, $2 - $bottom, $3 - $left, $4 - $bottom, $5 - $left, $6 - $bottom), $7/egm;
+    s/^($n $n $n $n) ($n) ($n) (cm)$/join " ", $1, $self->round($2 - $left, $3 - $bottom), $4/egm;
   }
 
   # Return content stream.
@@ -409,6 +408,14 @@ sub timestamp {
   my @time = localtime $time;
   my $tz = $time[8] * 60 - mktime(gmtime 0) / 60;
   return sprintf "(D:%s%+03d'%02d)", strftime("%Y%m%d%H%M%S", @time), $tz / 60, abs($tz) % 60;
+}
+
+# Round numeric values to 12 significant digits to avoid floating-point rounding error and remove trailing zeroes.
+sub round {
+  my ($self, @numbers) = @_;
+
+  @numbers = map { sprintf("%.12f", sprintf("%.12g", $_ || 0)) =~ s/\.?0+$//r; } @numbers;
+  return wantarray ? @numbers : $numbers[0];
 }
 
 # Validate PDF structure.
@@ -1398,6 +1405,15 @@ Find bounding box by analyzing a content stream.  This is only partially impleme
   my $now       = $pdf->timestamp;
 
 Generate timestamp in PDF internal format.
+
+=head1 UTILITY METHODS
+
+=head2 round
+
+  my @numbers = $pdf->round(@numbers);
+
+Round numeric values to 12 significant digits to avoid floating-point rounding error and
+remove trailing zeroes.
 
 =head1 INTERNAL METHODS
 
