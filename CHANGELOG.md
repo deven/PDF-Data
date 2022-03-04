@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 <!-- insertion marker -->
+## [v0.9.9](https://github.com/deven/PDF-Data/releases/tag/v0.9.9) - 2022-03-04
+
+<small>[Compare with v0.9.0](https://github.com/deven/PDF-Data/compare/v0.9.0...v0.9.9)</small>
+
+### Added
+
+- Add matrix utility methods. ([f764b06](https://github.com/deven/PDF-Data/commit/f764b06414a52cf0e7efea8fa0d5452f97402780) by Deven T. Corzine).
+- Add round() utility method. ([c48405f](https://github.com/deven/PDF-Data/commit/c48405fc0e359fd5cc7a162b4de983a2bc044687) by Deven T. Corzine).
+- Add PDF::Data->parse_data() method. ([2d81f2f](https://github.com/deven/PDF-Data/commit/2d81f2ff60e8eea90413dd3831d9679f93172b70) by Deven T. Corzine).
+- Add byte offsets to parsing error messages. ([e769739](https://github.com/deven/PDF-Data/commit/e769739cc301091ddc41aff4c54f28909a14d31b) by Deven T. Corzine).
+
+### Fixed
+
+- Fix a couple error messages. ([f3baf76](https://github.com/deven/PDF-Data/commit/f3baf76fdcaa0dba81001a32cbf3e0b92672f0c8) by Deven T. Corzine).
+- Fix automatic setting of -compress flag. ([ceea208](https://github.com/deven/PDF-Data/commit/ceea208096b6c7b78196fb39f2986ef834d1571f) by Deven T. Corzine).
+- Fix stream filter handling to work with array of filters. ([b587f4f](https://github.com/deven/PDF-Data/commit/b587f4fbd8a976336984d32cda356a9cfb861135) by Deven T. Corzine).
+- Fix bugs in stream parsing. ([b44d90d](https://github.com/deven/PDF-Data/commit/b44d90dd6baaff179ce703de670703f500e1d58f) by Deven T. Corzine).
+- Fix indentation of serialized directories when not minified. ([e78f1f6](https://github.com/deven/PDF-Data/commit/e78f1f67f2f5d065752b142fd33292326f859835) by Deven T. Corzine).
+
 ## [v0.9.0](https://github.com/deven/PDF-Data/releases/tag/v0.9.0) - 2021-01-22
 
 <small>[Compare with v0.1.0](https://github.com/deven/PDF-Data/compare/v0.1.0...v0.9.0)</small>
