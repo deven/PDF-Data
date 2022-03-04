@@ -17,6 +17,7 @@ use Compress::Raw::Zlib qw[:status :flush];
 use Data::Dump          qw[dd dump];
 use List::MoreUtils     qw[minmax];
 use List::Util          qw[max];
+use Math::Trig          qw[pi];
 use POSIX               qw[mktime strftime];
 use Scalar::Util        qw[blessed reftype];
 
@@ -416,6 +417,69 @@ sub round {
 
   @numbers = map { sprintf("%.12f", sprintf("%.12g", $_ || 0)) =~ s/\.?0+$//r; } @numbers;
   return wantarray ? @numbers : $numbers[0];
+}
+
+# Concatenate a transformation matrix with an original matrix, returning a new matrix.
+sub concat_matrix {
+  my ($self, $transform, $orig) = @_;
+
+  return [$self->round(
+    $transform->[0] * $orig->[0] + $transform->[1] * $orig->[2],
+    $transform->[0] * $orig->[1] + $transform->[1] * $orig->[3],
+    $transform->[2] * $orig->[0] + $transform->[3] * $orig->[2],
+    $transform->[2] * $orig->[1] + $transform->[3] * $orig->[3],
+    $transform->[4] * $orig->[0] + $transform->[5] * $orig->[2] + $orig->[4],
+    $transform->[4] * $orig->[1] + $transform->[5] * $orig->[3] + $orig->[5],
+  )];
+}
+
+# Calculate the inverse of a matrix, if possible.
+sub invert_matrix {
+  my ($self, $matrix) = @_;
+
+  # Calculate the determinant of the matrix.
+  my $det = $self->round($matrix->[0] * $matrix->[3] - $matrix->[1] * $matrix->[2]);
+
+  # If the determinant is zero, then the matrix is not invertible.
+  return if $det == 0;
+
+  # Return the inverse matrix.
+  return [$self->round(
+     $matrix->[3] / $det,
+    -$matrix->[1] / $det,
+    -$matrix->[2] / $det,
+     $matrix->[0] / $det,
+    ($matrix->[2] * $matrix->[5] - $matrix->[3] * $matrix->[4]) / $det,
+    ($matrix->[1] * $matrix->[4] - $matrix->[0] * $matrix->[5]) / $det,
+  )];
+}
+
+# Create a transformation matrix to translate the origin of the coordinate system to the specified coordinates.
+sub translate {
+  my ($self, $x, $y) = @_;
+
+  # Return a translate matrix.
+  return [$self->round(1, 0, 0, 1, $x, $y)];
+}
+
+# Create a transformation matrix to scale the coordinate space by the specified horizontal and vertical scaling factors.
+sub scale {
+  my ($self, $x, $y) = @_;
+
+  # Return a scale matrix.
+  return [$self->round($x, 0, 0, $y, 0, 0)];
+}
+
+# Create a transformation matrix to rotate the coordinate space counterclockwise by the specified angle (in degrees).
+sub rotate {
+  my ($self, $angle) = @_;
+
+  # Calculate the sine and cosine of the angle.
+  my $sin = sin($angle * pi / 180);
+  my $cos = cos($angle * pi / 180);
+
+  # Return a rotate matrix.
+  return [$self->round($cos, $sin, -$sin, $cos, 0, 0)];
 }
 
 # Validate PDF structure.
@@ -1414,6 +1478,41 @@ Generate timestamp in PDF internal format.
 
 Round numeric values to 12 significant digits to avoid floating-point rounding error and
 remove trailing zeroes.
+
+=head2 concat_matrix
+
+  my $matrix = $pdf->concat_matrix($transformation_matrix, $original_matrix);
+
+Concatenate a transformation matrix with an original matrix, returning a new matrix.
+This is for arrays of 6 elements representing standard 3x3 transformation matrices
+as used by PostScript and PDF.
+
+=head2 invert_matrix
+
+  my $inverse = $pdf->invert_matrix($matrix);
+
+Calculate the inverse of a matrix, if possible.  Returns undef if not invertible.
+
+=head2 translate
+
+  my $matrix = $pdf->translate($x, $y);
+
+Returns a 6-element transformation matrix representing translation of the origin to
+the specified coordinates.
+
+=head2 scale
+
+  my $matrix = $pdf->scale($x, $y);
+
+Returns a 6-element transformation matrix representing scaling of the coordinate
+space by the specified horizontal and vertical scaling factors.
+
+=head2 rotate
+
+  my $matrix = $pdf->rotate($angle);
+
+Returns a 6-element transformation matrix representing counterclockwise rotation of
+the coordinate system by the specified angle (in degrees).
 
 =head1 INTERNAL METHODS
 
