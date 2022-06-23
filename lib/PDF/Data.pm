@@ -819,12 +819,24 @@ sub parse_objects {
         defined(my $length = $stream->{Length})
           or warn join(": ", $self->{-file} || (), "Byte offset $offset: Object #$id: Stream length not found in metadata!\n");
         $length //= 0;
-        s/\A\r?\n(.{$length})\s*endstream$ws//s
-          or s/\A\r?\n((?>(?:[^e]+|(?!endstream\s)e)*))\s*endstream$ws//s
-          or croak join(": ", $self->{-file} || (), "Byte offset $offset: Invalid stream definition!\n");
-        $stream->{-data}    = $1;
+        s/\A\r?\n//;
+
+        # If the declared stream length is missing or invalid, determine the shortest possible length to make the stream valid.
+        unless (substr($_, $length) =~ /\A(\s*endstream$ws)/) {
+          if (/\A((?>(?:[^e]+|(?!endstream\s)e)*))\s*endstream$ws/) {
+            $length = length($1);
+          } else {
+            croak join(": ", $self->{-file} || (), "Byte offset $offset: Invalid stream definition!\n");
+          }
+        }
+
+        $stream->{-data}    = substr($_, 0, $length);
         $stream->{-id}      = $id;
-        $stream->{Length} //= length $1;
+        $stream->{Length} //= $length;
+
+        $_ = substr($_, $length);
+        s/\A\s*endstream$ws//;
+
         $self->filter_stream($stream) if $stream->{Filter};
       } elsif ($token eq "endobj") {                                            # Indirect object definition: 999 0 obj ... endobj
         my ($id, $object) = splice @objects, -2;
