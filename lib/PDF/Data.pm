@@ -11,7 +11,7 @@ use version; our $VERSION = version->declare('v0.9.9');
 # Initialize modules.
 use mro;
 use namespace::autoclean;
-use Carp                qw[croak confess];;
+use Carp                qw[carp croak confess];;
 use Clone;
 use Compress::Raw::Zlib qw[:status :flush];
 use Data::Dump          qw[dd dump];
@@ -198,8 +198,8 @@ sub parse_pdf {
     $pdf->{$key} = $args{$key};
   }
 
-  # Validate the PDF structure and return the new instance.
-  return $pdf->validate;
+  # Validate the PDF structure (unless the -novalidate flag is set) and return the new instance.
+  return $self->{-novalidate} ? $pdf : $pdf->validate;
 }
 
 # Generate and write a new PDF file.
@@ -501,11 +501,11 @@ sub validate {
 
   # Check for validation errors.
   if ($@) {
-    # Turn errors into warnings if -novalidate flag is set.
-    if ($self->{-novalidate}) {
-      warn $@;
-    } else {
+    # Make validation errors fatal if -validate flag is set.
+    if ($self->{-validate}) {
       croak $@;
+    } else {
+      carp $@;
     }
   }
 
