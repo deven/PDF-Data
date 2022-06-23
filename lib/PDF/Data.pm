@@ -551,16 +551,9 @@ sub validate_page {
   my ($self, $path, $page) = @_;
 
   if (my $contents = $page->{Contents}) {
-    if (is_array($contents)) {
-      for (my $i = 0; $i < @{$contents}; $i++) {
-        is_stream($contents->[$i]) or croak join(": ", $self->{-file} || (), "Error: $path\->{Contents}[$i] must be a stream!\n");
-        $self->validate_content_stream("$path\->{Contents}[$i]", $contents->[$i]);
-      }
-    } elsif (is_stream($contents)) {
-      $self->validate_content_stream("$path\->{Contents}", $contents);
-    } else {
-      croak join(": ", $self->{-file} || (), "Error: $path\->{Contents} must be an array or stream!\n");
-    }
+    $contents = $self->merge_content_streams($contents) if is_array($contents);
+    is_stream($contents) or croak join(": ", $self->{-file} || (), "Error: $path\->{Contents} must be an array or stream!\n");
+    $self->validate_content_stream("$path\->{Contents}", $contents);
   }
 
   # Validate resources, if any.
@@ -1460,7 +1453,7 @@ Dump an outline of the PDF internal structure for debugging.
 
 =head2 merge_content_streams
 
-  $pdf->merge_content_streams($array_of_streams);
+  my $stream = $pdf->merge_content_streams($array_of_streams);
 
 Merge multiple content streams into a single content stream.
 
