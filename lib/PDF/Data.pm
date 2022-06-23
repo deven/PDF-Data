@@ -334,6 +334,7 @@ sub merge_content_streams {
 
   # Concatenate stream data and calculate new length.
   my $merged = { -data => join("", map { $_->{-data}; } @{$streams}) };
+  $merged->{Length} = length($merged->{-data});
 
   # Return merged content stream.
   return $merged;
