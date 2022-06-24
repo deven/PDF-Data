@@ -68,8 +68,26 @@ sub clone {
 sub new_page {
   my ($self, $x, $y) = @_;
 
+  # Paper sizes.
+  my %sizes = (
+    LETTER => [  8.5,    11      ],
+    A0     => [ 33.125,  46.8125 ],
+    A1     => [ 23.375,  33.125  ],
+    A2     => [ 16.5,    23.375  ],
+    A3     => [ 11.75,   16.5    ],
+    A4     => [  8.25,   11.75   ],
+    A5     => [  5.875,  8.25    ],
+    A6     => [  4.125,  5.875   ],
+    A7     => [  2.9375, 4.125   ],
+    A8     => [  2.0625, 2.9375  ],
+  );
+
   # Default page size to US Letter (8.5" x 11").
-  ($x, $y) = (8.5, 11) if @_ == 1;
+  unless ($x and $y and $x > 0 and $y > 0) {
+    $x ||= "LETTER";
+    croak "Error: Unknown paper size \"$x\"!\n" unless $sizes{$x};
+    ($x, $y) = @{$sizes{$x}};
+  }
 
   # Make sure page size was specified.
   croak join(": ", $self->{-file} || (), "Error: Paper size not specified!\n") unless $x and $y and $x > 0 and $y > 0;
