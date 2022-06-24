@@ -39,7 +39,9 @@ our @option_list = (
   "find_bbox"       => \( our $find_bbox     = "" ),
   "new_bbox"        => \( our $new_bbox      = "" ),
 
+  "compress"        => \( our $compress      = 0  ),
   "decompress"      => \( our $decompress    = "" ),
+  "minify"          => \( our $minify        = 0  ),
 
   "help|h|?"        => \( our $print_help    = "" ),
   "version|V"       => \( our $print_version = "" ),
@@ -65,7 +67,9 @@ Options:
   --find_bbox                    Find the bounding box of the PDF file.
   --new_bbox                     Generate a new bounding box for the PDF file.
 
+  --compress                     Compress all PDF stream objects.
   --decompress                   Decompress all compressed PDF stream objects.
+  --minify                       Remove whitespace/comments from content streams.
 
   --help        (-h)             Print this help message.
   --version     (-V)             Print the version number of this program.
@@ -129,7 +133,8 @@ if ($dump) {
   }
 
   # Generate output PDF.
-  $pdf->{-compress} = $pdf->{-minify} = 0;
+  $pdf->{-compress}   = $compress;
   $pdf->{-decompress} = 1 if $decompress;
+  $pdf->{-minify}     = $minify;
   $pdf->write_pdf($output_file, $time);
 }
