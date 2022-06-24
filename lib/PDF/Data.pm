@@ -812,11 +812,10 @@ sub parse_objects {
         $_ = $_->[0] for $id, $stream;
         defined(my $length = $stream->{Length})
           or warn join(": ", $self->{-file} || (), "Byte offset $offset: Object #$id: Stream length not found in metadata!\n");
-        $length //= 0;
         s/\A\r?\n//;
 
         # If the declared stream length is missing or invalid, determine the shortest possible length to make the stream valid.
-        unless (substr($_, $length) =~ /\A(\s*endstream$ws)/) {
+        unless (defined($length) && substr($_, $length) =~ /\A(\s*endstream$ws)/) {
           if (/\A((?>(?:[^e]+|(?!endstream\s)e)*))\s*endstream$ws/) {
             $length = length($1);
           } else {
@@ -824,9 +823,9 @@ sub parse_objects {
           }
         }
 
-        $stream->{-data}    = substr($_, 0, $length);
-        $stream->{-id}      = $id;
-        $stream->{Length} //= $length;
+        $stream->{-data}  = substr($_, 0, $length);
+        $stream->{-id}    = $id;
+        $stream->{Length} = $length;
 
         $_ = substr($_, $length);
         s/\A\s*endstream$ws//;
