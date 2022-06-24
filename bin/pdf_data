@@ -11,14 +11,14 @@ use warnings;
 use version; our $version = version->declare('v1.0.0');
 
 # Initialize modules.
-use File::Basename qw[basename];
+use File::Basename qw[basename dirname];
 use FindBin;
 use Getopt::Long   qw[:config gnu_compat bundling no_getopt_compat require_order];
 use IO::Handle     qw[autoflush];
 use POSIX          qw[strftime];
 
 # Use local library path if PDF::Data module exists there.
-use if -f "$FindBin::Bin/lib/PDF/Data.pm", "lib", "$FindBin::Bin/lib";
+use if -f "@{[dirname $FindBin::Bin]}/lib/PDF/Data.pm", "lib", "@{[dirname $FindBin::Bin]}/lib";
 
 # Load PDF::Data module.
 use PDF::Data;
