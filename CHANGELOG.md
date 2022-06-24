@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 <!-- insertion marker -->
+## [v1.0.0](https://github.com/deven/PDF-Data/releases/tag/v1.0.0) - 2022-06-24
+
+<small>[Compare with v0.9.9](https://github.com/deven/PDF-Data/compare/v0.9.9...v1.0.0)</small>
+
+### Added
+
+- Add --compress and --minify options. ([2bc377e](https://github.com/deven/PDF-Data/commit/2bc377e9ed96eb615ee02bd546a11e9e2493bc97) by Deven T. Corzine).
+- Add --output_file option. ([a357fc9](https://github.com/deven/PDF-Data/commit/a357fc9e3ec13e16f1f1447a0546a552c451a8ee) by Deven T. Corzine).
+- Add generated "README.md" file. ([e34c88b](https://github.com/deven/PDF-Data/commit/e34c88bf32857ca76708e6b7ae8b9d2fc73f4f69) by Deven T. Corzine).
+- Add ".gitignore" file. ([8718a5a](https://github.com/deven/PDF-Data/commit/8718a5a0c28f7f2b9b66803c0acc376d2bb06fcd) by Deven T. Corzine).
+- Add new Dist::Zilla plugins. ([12070f4](https://github.com/deven/PDF-Data/commit/12070f473e06d3219e71e4fba11fe6912e81e0d0) by Deven T. Corzine).
+- Add "dist.ini" file for Dist::Zilla. ([4b818bd](https://github.com/deven/PDF-Data/commit/4b818bd5ebb868b338b04dcde8f5fecd9f78825a) by Deven T. Corzine).
+- Add basic test case for loading PDF::Data module. ([2655106](https://github.com/deven/PDF-Data/commit/265510689a8eb123c9004c5a304efe21d53e34f5) by Deven T. Corzine).
+- Add support for ISO standard paper sizes A0 through A8. ([a7d5bbb](https://github.com/deven/PDF-Data/commit/a7d5bbbbee4b75915ef9a4371434f1b77742b7d2) by Deven T. Corzine).
+- Add "pdf_data" utility script. ([418b38f](https://github.com/deven/PDF-Data/commit/418b38f5bf90929af4c0a938f8c017c6b4a28271) by Deven T. Corzine).
+
+### Fixed
+
+- Fix parsing of larger streams. ([043f98f](https://github.com/deven/PDF-Data/commit/043f98f359d02329f41f62530c3a7d4eb8c3d8c6) by Deven T. Corzine).
+
+### Changed
+
+- Change local library path after moving "pdf_data" script to "bin". ([c046ac5](https://github.com/deven/PDF-Data/commit/c046ac5b8acb46075127ba0c6c78dd1bb95d41d0) by Deven T. Corzine).
+
 ## [v0.9.9](https://github.com/deven/PDF-Data/releases/tag/v0.9.9) - 2022-03-04
 
 <small>[Compare with v0.9.0](https://github.com/deven/PDF-Data/compare/v0.9.0...v0.9.9)</small>

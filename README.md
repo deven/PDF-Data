@@ -4,7 +4,7 @@ PDF::Data - Manipulate PDF files and objects as data structures
 
 # VERSION
 
-version v0.9.9
+version v1.0.0
 
 # SYNOPSIS
 
