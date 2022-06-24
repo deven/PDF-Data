@@ -1354,13 +1354,13 @@ data is generated, this hash is written to the PDF file as the trailer
 dictionary.  However, hash keys starting with "-" are ignored when writing
 the PDF file, as they are considered to be flags or metadata.
 
-For example, C<$pdf->{-compress}> is a flag which controls whether or not
+For example, C<$pdf-E<gt>{-compress}> is a flag which controls whether or not
 streams will be compressed when generating PDF file data.  This flag can be
 set in the constructor (as shown above), or set directly on the object.
 
-The C<$pdf->{-minify}> flag controls whether or not to save space in the
+The C<$pdf-E<gt>{-minify}> flag controls whether or not to save space in the
 generated PDF file data by removing comments and extra whitespace from
-content streams.  This flag can be used along with C<$pdf->{-compress}>
+content streams.  This flag can be used along with C<$pdf-E<gt>{-compress}>
 to make the generated PDF file data even smaller, but this transformation
 is not reversible.
 
@@ -1392,9 +1392,9 @@ Append the specified page object to the end of the PDF page tree.
 
   my $pdf = PDF::Data->read_pdf($file, %args);
 
-Read a PDF file and parse it with C<$pdf->parse_pdf()>, returning a new
+Read a PDF file and parse it with C<$pdf-E<gt>parse_pdf()>, returning a new
 object instance.  Any streams compressed with the /FlateDecode filter
-will be automatically decompressed.  Unless the C<$pdf->{-decompress}>
+will be automatically decompressed.  Unless the C<$pdf-E<gt>{-decompress}>
 flag is set, the same streams will also be automatically recompressed
 again when generating PDF file data.
 
@@ -1402,9 +1402,9 @@ again when generating PDF file data.
 
   my $pdf = PDF::Data->parse_pdf($data, %args);
 
-Used by C<$pdf->read_pdf()> to parse the raw PDF file data and create
+Used by C<$pdf-E<gt>read_pdf()> to parse the raw PDF file data and create
 a new object instance.  This method can also be called directly instead
-of calling C<$pdf->read_pdf()> if the PDF file data comes another source
+of calling C<$pdf-E<gt>read_pdf()> if the PDF file data comes another source
 instead of a regular file.
 
 =head2 write_pdf
@@ -1564,7 +1564,7 @@ Used by C<parse_objects()> to inflate compressed streams.
   $new_stream = $pdf->compress_stream($stream);
 
 Used by C<write_object()> to compress streams if enabled.  This is controlled
-by the C<$pdf->{-compress}> flag, which is set automatically when reading a
+by the C<$pdf-E<gt>{-compress}> flag, which is set automatically when reading a
 PDF file with compressed streams, but must be set manually for PDF files
 created from scratch, either in the constructor arguments or after the fact.
 
