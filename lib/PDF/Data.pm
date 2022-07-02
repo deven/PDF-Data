@@ -656,7 +656,6 @@ sub generate_content_stream {
   my $stream = "";
 
   # Loop across parsed objects.
-  my $last_object;
   foreach my $object (@{$objects}) {
     # Check parsed object type.
     if ($object->[1]{type} eq "dict") {
@@ -669,8 +668,6 @@ sub generate_content_stream {
       # Serialize string or other token.
       $self->serialize_object(\$stream, $object->[0]);
     }
-  } continue {
-    $last_object = $object;
   }
 
   # Return generated content stream.
