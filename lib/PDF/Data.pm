@@ -563,6 +563,9 @@ sub validate_page_tree {
     warn join(": ", $self->{-file} || (), "Warning: Fixing: $path->{Count} = $count\n");
     $page_tree_node->{Count} = $count;
   }
+
+  # Return leaf node count.
+  return $count;
 }
 
 # Validate page object.
