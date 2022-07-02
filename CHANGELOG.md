@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 <!-- insertion marker -->
+## [v1.0.1](https://github.com/deven/PDF-Data/releases/tag/v1.0.1) - 2022-07-02
+
+<small>[Compare with v1.0.0](https://github.com/deven/PDF-Data/compare/v1.0.0...v1.0.1)</small>
+
+### Added
+
+- Add Dist::Zilla "PruneFiles" plugin to exclude "dist" directory. ([903294f](https://github.com/deven/PDF-Data/commit/903294f4f7efe57a214c3e4393c1a2f2c928b97b) by Deven T. Corzine).
+- Add documentation for remaining internal methods. ([4377c79](https://github.com/deven/PDF-Data/commit/4377c79d5f59917403793c3b0207c5dbc4295450) by Deven T. Corzine).
+- Add support for U.S. Legal page size (8.5" x 14"). ([c77e2c3](https://github.com/deven/PDF-Data/commit/c77e2c35bde5eba45e9a388d89a53bd18f3b98f4) by Deven T. Corzine).
+
+### Fixed
+
+- Fix validate_page_tree() to return leaf node count. ([9d95ab8](https://github.com/deven/PDF-Data/commit/9d95ab83100da14f2c6313d3914c3fd20167a16c) by Deven T. Corzine).
+- Fix default value for --output_file to use standard output. ([bff90aa](https://github.com/deven/PDF-Data/commit/bff90aaa8b5d1c034800c1ca221212334ff28395) by Deven T. Corzine).
+
+### Removed
+
+- Remove unused $last_object variable. ([bf8e491](https://github.com/deven/PDF-Data/commit/bf8e491ab30ff2e218f192cda4d58e5df7d8bf5c) by Deven T. Corzine).
+
 ## [v1.0.0](https://github.com/deven/PDF-Data/releases/tag/v1.0.0) - 2022-06-24
 
 <small>[Compare with v0.9.9](https://github.com/deven/PDF-Data/compare/v0.9.9...v1.0.0)</small>

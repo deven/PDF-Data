@@ -6,7 +6,7 @@ use warnings;
 use utf8;
 
 # Declare module version.  (Also in pod documentation below.)
-use version; our $VERSION = version->declare('v1.0.0');
+use version; our $VERSION = version->declare('v1.0.1');
 
 # Initialize modules.
 use mro;
@@ -1348,7 +1348,7 @@ PDF::Data - Manipulate PDF files and objects as data structures
 
 =head1 VERSION
 
-version v1.0.0
+version v1.0.1
 
 =head1 SYNOPSIS
 
