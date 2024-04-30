@@ -101,7 +101,7 @@ sub new_page {
   return {
     Type      => "/Page",
     MediaBox  => [0, 0, $x, $y],
-    Contents  => { -data  => "" },
+    Contents  => { -data => "" },
     Resources => {
       ProcSet => ["/PDF", "/Text"],
     },
@@ -307,8 +307,14 @@ sub pdf_file_data {
 sub dump_pdf {
   my ($self, $file, $mode) = @_;
 
+  # Default to standard output.
+  $file = "-" if not defined $file or $file eq "";
+
+  # Default to dumping full PDF internal structure.
+  $mode //= "";
+
   # Use "<standard output>" instead of "-" to describe standard output.
-  my $filename = $file =~ s/^-$/<standard output>/r;
+  my $filename = ($file // "") =~ s/^-?$/<standard output>/r;
 
   # Open output file.
   open my $OUT, ">$file" or croak "$filename: $!\n";
@@ -348,6 +354,7 @@ sub merge_content_streams {
   # Remove extra trailing space from streams.
   foreach my $stream (@{$streams}) {
     die unless is_stream $stream;
+    $stream->{-data} //= "";
     $stream->{-data} =~ s/(?<=\s) \z//;
   }
 
@@ -364,7 +371,7 @@ sub find_bbox {
   my ($self, $content_stream, $new) = @_;
 
   # Get data from stream, if necessary.
-  $content_stream = $content_stream->{-data} if is_stream $content_stream;
+  $content_stream = $content_stream->{-data} // "" if is_stream $content_stream;
 
   # Split content stream into lines.
   my @lines = grep { $_ ne ""; } split /\n/, $content_stream;
@@ -560,7 +567,7 @@ sub validate_page_tree {
 
   # Fix leaf node count if wrong.
   if (($page_tree_node->{Count} || 0) != $count) {
-    warn join(": ", $self->{-file} || (), "Warning: Fixing: $path->{Count} = $count\n");
+    warn join(": ", $self->{-file} || (), "Warning: Fixing: $path\->{Count} = $count\n");
     $page_tree_node->{Count} = $count;
   }
 
@@ -575,6 +582,7 @@ sub validate_page {
   if (my $contents = $page->{Contents}) {
     $contents = $self->merge_content_streams($contents) if is_array($contents);
     is_stream($contents) or croak join(": ", $self->{-file} || (), "Error: $path\->{Contents} must be an array or stream!\n");
+    $contents->{-data} //= "";
     $self->validate_content_stream("$path\->{Contents}", $contents);
   }
 
@@ -606,6 +614,7 @@ sub validate_xobject {
 
   # Make sure the form XObject is a stream.
   is_stream($xobject) or croak join(": ", $self->{-file} || (), "Error: $path must be a content stream!\n");
+  $xobject->{-data} //= "";
 
   # Make sure the Subtype is set to /Form.
   $xobject->{Subtype} eq "/Form" or croak join(": ", $self->{-file} || (), "Error: $path\->{Subtype} must be /Form!\n");
@@ -622,7 +631,7 @@ sub validate_content_stream {
   my ($self, $path, $stream) = @_;
 
   # Make sure the content stream can be parsed.
-  my @objects = eval { $self->parse_objects({}, $stream->{-data}, 0); };
+  my @objects = eval { $self->parse_objects({}, $stream->{-data} // "", 0); };
   croak join(": ", $self->{-file} || (), "Error: $path: $@") if $@;
 
   # Minify content stream if requested.
@@ -634,7 +643,7 @@ sub minify_content_stream {
   my ($self, $stream, $objects) = @_;
 
   # Parse object stream if necessary.
-  $objects ||= [ $self->parse_objects({}, $stream->{-data}, 0) ];
+  $objects ||= [ $self->parse_objects({}, $stream->{-data} // "", 0) ];
 
   # Generate new content stream from objects.
   $stream->{-data} = $self->generate_content_stream($objects);
@@ -980,6 +989,7 @@ sub resolve_references {
 
     # For streams, validate the length metadata.
     if (is_stream $object) {
+      $object->{-data} //= "";
       substr($object->{-data}, $object->{Length}) =~ s/\A\s+\z// if $object->{Length} and length($object->{-data}) > $object->{Length};
       my $len = length $object->{-data};
       $object->{Length} ||= $len;
@@ -1129,6 +1139,9 @@ sub add_indirect_objects {
 
   # Loop across specified objects.
   foreach my $object (@objects) {
+    # Make sure content streams are defined.
+    $object->{-data} //= "" if is_stream $object;
+
     # Check if object exists and is not in the lookup hash yet.
     if (defined $object and not $objects->[0]{$object}) {
       # Add the new indirect object to the array.
@@ -1153,6 +1166,7 @@ sub write_object {
   if (is_hash $object) {
     # For streams, compress the stream or update the length metadata.
     if (is_stream $object) {
+      $object->{-data} //= "";
       if (($self->{-compress} or $object->{-compress}) and not ($self->{-decompress} or $object->{-decompress})) {
         $object = $self->compress_stream($object);
       } else {
@@ -1179,6 +1193,7 @@ sub write_object {
 
     # For streams, write the stream data.
     if (is_stream $object) {
+      $object->{-data} //= "";
       croak join(": ", $self->{-file} || (), "Stream written as direct object!\n") if $indent;
       my $newline = substr($object->{-data}, -1) eq "\n" ? "" : "\n";
       ${$pdf_file_data} =~ s/\n?\z/\n/;
