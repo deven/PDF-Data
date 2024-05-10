@@ -81,6 +81,12 @@ our ($usage) = $help_message =~ /\A\s*(Usage: .*?\n)\n/s or die "$program: Usage
 # Parse command-line options.
 GetOptions(@option_list) or die $usage;
 
+# Get input and output PDF filenames from command-line arguments.
+my $input_pdf = shift @ARGV || "-";
+
+# Print help if using standard input and it's a terminal.
+$print_help++ if $input_pdf eq "-" and -t;
+
 # For standard --help and --version options, print message and exit.
 if ($print_help or $print_version) {
   print "$program $version\n";
@@ -90,9 +96,6 @@ if ($print_help or $print_version) {
 
 # Don't buffer output.
 autoflush STDOUT;
-
-# Get input and output PDF filenames from command-line arguments.
-my $input_pdf = shift @ARGV || "-";
 
 # Override output filename if --inplace is specified.
 if ($inplace) {
