@@ -843,7 +843,7 @@ sub parse_objects {
         s/\A\r?\n//;
 
         # If the declared stream length is missing or invalid, determine the shortest possible length to make the stream valid.
-        unless (defined($length) && substr($_, $length) =~ /\A(\s*endstream$ws)/) {
+        unless (defined($length) && !ref($length) && substr($_, $length) =~ /\A(\s*endstream$ws)/) {
           if (/\A((?>(?:[^e]+|(?!endstream\s)e)*))\s*endstream$ws/) {
             $length = length($1);
           } else {
