@@ -50,7 +50,7 @@ our @option_list = (
 # Help message.
 our $help_message = <<EOF;
 
-Usage: $program [-v] [-i] [-o <output.pdf>] [<options>] [<input.pdf>]\n";
+Usage: $program [-v] [-i] [-o <output.pdf>] [<options>] [<input.pdf>]
 
 Utility script for PDF::Data module.
 
@@ -107,7 +107,7 @@ my $time = time;
 
 # Attempt to get file modification timestamp.
 unless ($input_pdf eq "-") {
-  die "$input_pdf $!\n" unless -e $input_pdf;
+  die "$input_pdf: $!\n" unless -e $input_pdf;
   $time = (stat _)[9];
 }
 
