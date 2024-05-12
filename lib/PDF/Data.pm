@@ -608,19 +608,16 @@ sub validate_xobjects {
   }
 }
 
-# Validate a single form XObject.
+# Validate a single XObject.
 sub validate_xobject {
   my ($self, $path, $xobject) = @_;
 
-  # Make sure the form XObject is a stream.
+  # Make sure the XObject is a stream.
   is_stream($xobject) or croak join(": ", $self->{-file} || (), "Error: $path must be a content stream!\n");
   $xobject->{-data} //= "";
 
-  # Make sure the Subtype is set to /Form.
-  $xobject->{Subtype} eq "/Form" or croak join(": ", $self->{-file} || (), "Error: $path\->{Subtype} must be /Form!\n");
-
-  # Validate the form XObject content stream.
-  $self->validate_content_stream($path, $xobject);
+  # Validate the content stream, if this is a form XObject.
+  $self->validate_content_stream($path, $xobject) if $xobject->{Subtype} eq "/Form";
 
   # Validate resources, if any.
   $self->validate_resources("$path\{Resources}", $xobject->{Resources}) if is_hash($xobject->{Resources});
