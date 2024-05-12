@@ -732,7 +732,7 @@ sub serialize_object {
   }
 
   # Wrap the line if line length would exceed 255 characters.
-  ${$stream} .= "\n" if length((${$stream} =~ /(.*)\z/)[0]) + length($object) >= 255;
+  ${$stream} .= "\n" if length(${$stream}) - (rindex(${$stream}, "\n") + 1) + length($object) >= 255;
 
   # Add a space if necessary.
   ${$stream} .= " " unless ${$stream} =~ /(^|[\s)>\[\]{}])$/ or $object =~ /^[\s()<>\[\]{}\/%]/;
