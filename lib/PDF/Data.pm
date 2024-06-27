@@ -1254,6 +1254,20 @@ sub dump_object {
   # Dump output.
   my $output = "";
 
+  # Hash key sort priority.
+  my %priority = (
+    Type           => -2,
+    Version        => -1,
+    Root           => 1,
+    Pages          => 2,
+    PageLabels     => 3,
+    Names          => 4,
+    Dests          => 5,
+    Outlines       => 6,
+    Threads        => 7,
+    StructTreeRoot => 8,
+  );
+
   # Check mode and object type.
   if ($mode eq "outline") {
     if (ref $object and $seen->{$object}) {
@@ -1266,7 +1280,7 @@ sub dump_object {
         $output = "(STREAM)";
       } else {
         $label =~ s/(?<=\w)$/->/;
-        my @keys = sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object};
+        my @keys = sort { ($priority{$a} // 0) <=> ($priority{$b} // 0) || fc($a) cmp fc($b) || $a cmp $b; } keys %{$object};
         my $key_len = max map length $_, @keys;
         foreach my $key (@keys) {
           my $obj = $object->{$key};
@@ -1310,7 +1324,7 @@ sub dump_object {
     $seen->{$object} = $label;
     $output = "{ # $label\n";
     $label =~ s/(?<=\w)$/->/;
-    my @keys = sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object};
+    my @keys = sort { ($priority{$a} // 0) <=> ($priority{$b} // 0) || fc($a) cmp fc($b) || $a cmp $b; } keys %{$object};
     my $key_len = max map length $_, @keys;
     foreach my $key (@keys) {
       my $obj = $object->{$key};
