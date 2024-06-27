@@ -842,6 +842,16 @@ sub parse_objects {
           or warn join(": ", $self->{-file} || (), "Byte offset $offset: Object #$id: Stream length not found in metadata!\n");
         s/\A\r?\n//;
 
+        # Check for unsupported stream types.
+        my $type = $stream->{Type} // "";
+        if ($type eq "/ObjStm") {
+          croak join(": ", $self->{-file} || (), "Byte offset $offset: PDF 1.5 object streams are not supported!\n");
+        } elsif ($type eq "/XRef") {
+          croak join(": ", $self->{-file} || (), "Byte offset $offset: PDF 1.5 cross-reference streams are not supported!\n");
+	} elsif ($type !~ /^(?:\/(?:Metadata|XObject))?$/) {
+          croak join(": ", $self->{-file} || (), "Byte offset $offset: Unrecognized stream type \"$type\"!\n");
+        }
+
         # If the declared stream length is missing or invalid, determine the shortest possible length to make the stream valid.
         unless (defined($length) && !ref($length) && substr($_, $length) =~ /\A(\s*endstream$ws)/) {
           if (/\A((?>(?:[^e]+|(?!endstream\s)e)*))\s*endstream$ws/) {
