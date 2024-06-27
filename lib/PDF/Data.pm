@@ -177,7 +177,7 @@ sub parse_pdf {
   $self = bless \%args, $class;
 
   # Validate PDF file structure.
-  my ($pdf_version, $startxref) = $data =~ /\A(?:%PDF-(\d+\.\d+)\s*?$n.*$n)startxref$n(\d+)$n%%EOF$n?\z/s
+  my ($pdf_version, $startxref) = $data =~ /\A(?:%PDF-(\d+\.\d+)\s*?$n.*$n)startxref$n(\d+)$n%%EOF.{0,1019}?\z/s
     or croak join(": ", $self->{-file} || (), "File is not a valid PDF document!\n");
 
   # Check PDF version.
