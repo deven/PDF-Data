@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 <!-- insertion marker -->
+## [v1.1.0](https://github.com/deven/PDF-Data/releases/tag/v1.1.0) - 2024-06-27
+
+<small>[Compare with v1.0.1](https://github.com/deven/PDF-Data/compare/v1.0.1...v1.1.0)</small>
+
+### Added
+
+- Add validation of stream types and errors for object/xref streams. ([2b54422](https://github.com/deven/PDF-Data/commit/2b54422fd7fd617318ac9039e70d8e655694df62) by Deven T. Corzine).
+
+### Fixed
+
+- Fix XObject validation to accept any XObject subtype. ([12fa3a6](https://github.com/deven/PDF-Data/commit/12fa3a69eb87af77c0151949fd86d11adcb811b8) by Deven T. Corzine).
+- Fix PDF recognition regex to allow trailing whitespace on the %PDF line. ([4697c58](https://github.com/deven/PDF-Data/commit/4697c5832421659cc124bb73a609a3dccace811b) by Deven T. Corzine).
+- Fix minor errors in hardcoded strings. ([70e161e](https://github.com/deven/PDF-Data/commit/70e161e75c387e25cc52febbd7564bed7c32f2f5) by Deven T. Corzine).
+
 ## [v1.0.1](https://github.com/deven/PDF-Data/releases/tag/v1.0.1) - 2022-07-02
 
 <small>[Compare with v1.0.0](https://github.com/deven/PDF-Data/compare/v1.0.0...v1.0.1)</small>
