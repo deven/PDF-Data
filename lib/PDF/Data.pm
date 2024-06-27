@@ -176,9 +176,12 @@ sub parse_pdf {
   # Create a new instance using the provided arguments.
   $self = bless \%args, $class;
 
-  # Validate PDF file structure, ignoring possible leading and/or trailing garbage and some illegal whitespace/comments.
-  my ($pdf_data, $pdf_version, $startxref) = $data =~ /(%PDF-(\d+\.\d+)\s*?$n.*$n)startxref$ws?(\d+)$ws?%%EOF/s
+  # Validate minimal PDF file structure starting with %PDF and ending with %%EOF.
+  my ($pdf_version, $pdf_data) = $data =~ /%PDF-(\d+\.\d+)\s*?$n(.*)%%EOF/s
     or croak join(": ", $self->{-file} || (), "File does not contain a valid PDF document!\n");
+
+  # Discard startxref value which should be present in any valid PDF, but don't require it.
+  $pdf_data =~ s/\bstartxref$ws?(\d+)$ws\z//s;
 
   # Check PDF version.
   warn join(": ", $self->{-file} || (), "Warning: PDF version $pdf_version not supported!\n")
