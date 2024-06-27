@@ -176,9 +176,9 @@ sub parse_pdf {
   # Create a new instance using the provided arguments.
   $self = bless \%args, $class;
 
-  # Validate PDF file structure.
-  my ($pdf_version, $startxref) = $data =~ /\A(?:%PDF-(\d+\.\d+)\s*?$n.*$n)startxref$n(\d+)$n%%EOF.{0,1019}?\z/s
-    or croak join(": ", $self->{-file} || (), "File is not a valid PDF document!\n");
+  # Validate PDF file structure, ignoring possible leading and/or trailing garbage and some illegal whitespace/comments.
+  my ($pdf_data, $pdf_version, $startxref) = $data =~ /(%PDF-(\d+\.\d+)\s*?$n.*$n)startxref$ws?(\d+)$ws?%%EOF/s
+    or croak join(": ", $self->{-file} || (), "File does not contain a valid PDF document!\n");
 
   # Check PDF version.
   warn join(": ", $self->{-file} || (), "Warning: PDF version $pdf_version not supported!\n")
@@ -188,7 +188,7 @@ sub parse_pdf {
   my $objects = {};
 
   # Parse PDF objects.
-  my @objects = $self->parse_objects($objects, $data, 0);
+  my @objects = $self->parse_objects($objects, $pdf_data, 0);
 
   # PDF trailer dictionary.
   my $trailer;
