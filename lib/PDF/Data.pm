@@ -438,7 +438,7 @@ sub timestamp {
   $time //= time;
   my @time = localtime $time;
   my $tz = $time[8] * 60 - mktime(gmtime 0) / 60;
-  return sprintf "(D:%s%+03d'%02d)", strftime("%Y%m%d%H%M%S", @time), $tz / 60, abs($tz) % 60;
+  return sprintf "(D:%s%+03d'%02d')", strftime("%Y%m%d%H%M%S", @time), $tz / 60, abs($tz) % 60;
 }
 
 # Round numeric values to 12 significant digits to avoid floating-point rounding error and remove trailing zeroes.
