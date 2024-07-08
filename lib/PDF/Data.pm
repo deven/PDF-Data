@@ -849,7 +849,7 @@ sub parse_objects {
         } elsif ($type eq "/XRef") {
           croak join(": ", $self->{-file} || (), "Byte offset $offset: PDF 1.5 cross-reference streams are not supported!\n");
 	} elsif ($type !~ /^(?:\/(?:Metadata|XObject))?$/) {
-          croak join(": ", $self->{-file} || (), "Byte offset $offset: Unrecognized stream type \"$type\"!\n");
+          carp join(": ", $self->{-file} || (), "Byte offset $offset: Unrecognized stream type \"$type\"!\n");
         }
 
         # If the declared stream length is missing or invalid, determine the shortest possible length to make the stream valid.
