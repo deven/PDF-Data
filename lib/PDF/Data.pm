@@ -675,6 +675,9 @@ sub generate_content_stream {
     } elsif ($object->[1]{type} eq "array") {
       # Serialize array.
       $self->serialize_array(\$stream, $object->[0]);
+    } elsif ($object->[1]{type} eq "image") {
+      # Serialize inline image data.
+      $self->serialize_image(\$stream, $object->[0]);
     } else {
       # Serialize string or other token.
       $self->serialize_object(\$stream, $object->[0]);
@@ -724,6 +727,14 @@ sub serialize_array {
     }
   }
   ${$stream} .= "]";
+}
+
+# Append the serialization of inline image data to the generated content stream.
+sub serialize_image {
+  my ($self, $stream, $image) = @_;
+
+  # Append inline image data between ID (Image Data) and EI (End Image) operators.
+  ${$stream} .= "\nID\n$image\nEI\n";
 }
 
 # Append the serialization of an object to the generated content stream.
@@ -835,6 +846,13 @@ sub parse_objects {
           ($token eq "R" ? \$new_id : $new_id),
           { type => $token, offset => $id->[1]{offset} }
         ];
+      } elsif ($token eq "ID") {                                                # Inline image data: ID ... EI
+        s/\A$s(.*?)(?:\r\n|$s)?EI$s//s or croak join(": ", $self->{-file} || (), "Byte offset $offset: Invalid inline image data!\n");
+        my $image = $1;
+
+        # TODO: Apply encoding filters?
+
+        push @objects, [ $image, { type => "image" } ];
       } elsif ($token eq "stream") {                                            # Stream content: stream ... endstream
         my ($id, $stream) = @objects[-2,-1];
         $stream->[1]{type} eq "dict" or croak join(": ", $self->{-file} || (), "Byte offset $offset: Stream dictionary missing!\n");
