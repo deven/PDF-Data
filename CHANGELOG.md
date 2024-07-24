@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 <!-- insertion marker -->
+## [v1.2.0](https://github.com/deven/PDF-Data/releases/tag/v1.2.0) - 2024-07-24
+
+<small>[Compare with v1.1.0](https://github.com/deven/PDF-Data/compare/v1.1.0...v1.2.0)</small>
+
+### Added
+
+- Add support for inline image data in content streams. ([7e6b9f8](https://github.com/deven/PDF-Data/commit/7e6b9f88f95961ba1b1d68dfacac980911cdd625) by Deven T. Corzine).
+- Add "CMap" as a recognized stream type. ([e16ea59](https://github.com/deven/PDF-Data/commit/e16ea593aedb1cb9873c5e643bae5f6274cf4de6) by Deven T. Corzine).
+- Add missing single quote to timestamp() output. ([43b3999](https://github.com/deven/PDF-Data/commit/43b3999c0c31ef38f5202edc913050613db5f69e) by Deven T. Corzine).
+
 ## [v1.1.0](https://github.com/deven/PDF-Data/releases/tag/v1.1.0) - 2024-06-27
 
 <small>[Compare with v1.0.1](https://github.com/deven/PDF-Data/compare/v1.0.1...v1.1.0)</small>
