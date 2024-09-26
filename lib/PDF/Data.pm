@@ -384,18 +384,18 @@ sub find_bbox {
   my ($left, $bottom, $right, $top);
 
   # Regex to match a number.
-  my $n = qr/-?\d+(?:\.\d+)?/;
+  my $num = qr/-?\d+(?:\.\d+)?/;
 
   # Determine bounding box from content stream.
   foreach (@lines) {
     # Skip neutral lines.
-    next if m{^(?:/Figure <</MCID \d >>BDC|/PlacedGraphic /MC\d BDC|EMC|/GS\d gs|BX /Sh\d sh EX Q|[Qqh]|W n|$n $n $n $n $n $n cm)$s*$};
+    next if m{^(?:/Figure <</MCID \d >>BDC|/PlacedGraphic /MC\d BDC|EMC|/GS\d gs|BX /Sh\d sh EX Q|[Qqh]|W n|$num $num $num $num $num $num cm)$s*$};
 
     # Capture coordinates from drawing operations to calculate bounding box.
-    if (my ($x1, $y1, $x2, $y2, $x3, $y3) = /^($n) ($n) (?:[ml]|($n) ($n) (?:[vy]|($n) ($n) c))$/) {
+    if (my ($x1, $y1, $x2, $y2, $x3, $y3) = /^($num) ($num) (?:[ml]|($num) ($num) (?:[vy]|($num) ($num) c))$/) {
       ($left, $right) = minmax grep { defined $_; } $left, $right, $x1, $x2, $x3;
       ($bottom, $top) = minmax grep { defined $_; } $bottom, $top, $y1, $y2, $y3;
-    } elsif (my ($x, $y, $width, $height) = /^($n) ($n) ($n) ($n) re$/) {
+    } elsif (my ($x, $y, $width, $height) = /^($num) ($num) ($num) ($num) re$/) {
       ($left, $right) = minmax grep { defined $_; } $left, $right, $x, $x + $width;
       ($bottom, $top) = minmax grep { defined $_; } $bottom, $top, $y, $y + $height;
     } else {
@@ -414,10 +414,10 @@ sub find_bbox {
   # Update content stream.
   for ($content_stream) {
     # Update coordinates in drawing operations.
-    s/^($n) ($n) ([ml])$/join " ", $self->round($1 - $left, $2 - $bottom), $3/egm;
-    s/^($n) ($n) ($n) ($n) ([vy])$/join " ", $self->round($1 - $left, $2 - $bottom, $3 - $left, $4 - $bottom), $5/egm;
-    s/^($n) ($n) ($n) ($n) ($n) ($n) (c)$/join " ", $self->round($1 - $left, $2 - $bottom, $3 - $left, $4 - $bottom, $5 - $left, $6 - $bottom), $7/egm;
-    s/^($n $n $n $n) ($n) ($n) (cm)$/join " ", $1, $self->round($2 - $left, $3 - $bottom), $4/egm;
+    s/^($num) ($num) ([ml])$/join " ", $self->round($1 - $left, $2 - $bottom), $3/egm;
+    s/^($num) ($num) ($num) ($num) ([vy])$/join " ", $self->round($1 - $left, $2 - $bottom, $3 - $left, $4 - $bottom), $5/egm;
+    s/^($num) ($num) ($num) ($num) ($num) ($num) (c)$/join " ", $self->round($1 - $left, $2 - $bottom, $3 - $left, $4 - $bottom, $5 - $left, $6 - $bottom), $7/egm;
+    s/^($num $num $num $num) ($num) ($num) (cm)$/join " ", $1, $self->round($2 - $left, $3 - $bottom), $4/egm;
   }
 
   # Return content stream.
