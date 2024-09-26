@@ -14,7 +14,6 @@ use Carp                qw[carp croak confess];;
 use Clone;
 use Compress::Raw::Zlib qw[:status :flush];
 use Data::Dump          qw[dd dump];
-use List::MoreUtils     qw[minmax];
 use List::Util          qw[max];
 use Math::Trig          qw[pi];
 use POSIX               qw[mktime strftime];
@@ -392,14 +391,25 @@ sub find_bbox {
     next if m{^(?:/Figure <</MCID \d >>BDC|/PlacedGraphic /MC\d BDC|EMC|/GS\d gs|BX /Sh\d sh EX Q|[Qqh]|W n|$num $num $num $num $num $num cm)$s*$};
 
     # Capture coordinates from drawing operations to calculate bounding box.
+    my (@x, @y);
     if (my ($x1, $y1, $x2, $y2, $x3, $y3) = /^($num) ($num) (?:[ml]|($num) ($num) (?:[vy]|($num) ($num) c))$/) {
-      ($left, $right) = minmax grep { defined $_; } $left, $right, $x1, $x2, $x3;
-      ($bottom, $top) = minmax grep { defined $_; } $bottom, $top, $y1, $y2, $y3;
+      @x = ($x1, $x2, $x3);
+      @y = ($y1, $y2, $y3);
     } elsif (my ($x, $y, $width, $height) = /^($num) ($num) ($num) ($num) re$/) {
-      ($left, $right) = minmax grep { defined $_; } $left, $right, $x, $x + $width;
-      ($bottom, $top) = minmax grep { defined $_; } $bottom, $top, $y, $y + $height;
+      @x = ($x, $x + $width);
+      @y = ($y, $y + $height);
     } else {
       croak "Parse error: Content line \"$_\" not recognized!\n";
+    }
+
+    foreach my $x (@x) {
+      $left  = $x if not defined $left  or $x < $left;
+      $right = $x if not defined $right or $x > $right;
+    }
+
+    foreach my $y (@y) {
+      $bottom = $y if not defined $bottom or $y < $bottom;
+      $top    = $y if not defined $top    or $y > $top;
     }
   }
 
