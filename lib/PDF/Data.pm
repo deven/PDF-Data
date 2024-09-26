@@ -10,7 +10,6 @@ use version; our $VERSION = version->declare('v1.2.0');
 
 # Initialize modules.
 use mro;
-use namespace::autoclean;
 use Carp                qw[carp croak confess];;
 use Clone;
 use Compress::Raw::Zlib qw[:status :flush];
