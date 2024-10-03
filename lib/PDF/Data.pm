@@ -840,8 +840,11 @@ sub parse_objects {
       push @objects, [ $array, { type => "array" }];
     } elsif (s/\A(\((?:(?>[^\\()]+)|\\.|(?1))*\))//) {                          # String literal: (...) (including nested parens)
       push @objects, [ $1, { type => "string" } ];
-    } elsif (s/\A(<[0-9A-Fa-f$ss]*>)//) {                                       # Hexadecimal string literal: <...>
-      push @objects, [ lc($1) =~ s/$s+//gr, { type => "hex" } ];
+    } elsif (s/\A<([0-9A-Fa-f$ss]*)>//) {                                       # Hexadecimal string literal: <...>
+      my $hex_string = lc($1);
+      $hex_string =~ s/$s+//g;
+      $hex_string .= "0" if length($hex_string) % 2 == 1;
+      push @objects, [ "<$hex_string>", { type => "hex" } ];
     } elsif (s/\A(\/?[^$ss()<>\[\]{}\/%]+)//) {                                 # /Name, number or other token
       # Check for tokens of special interest.
       my $token = $1;
