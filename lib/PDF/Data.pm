@@ -828,6 +828,8 @@ sub parse_objects {
     # Parse the next PDF object.
     if (s/\A$ws//) {                                                            # Strip leading whitespace/comments.
       next;
+    } elsif (s/\A%%EOF//) {                                                     # End of PDF file marker.
+      last;
     } elsif (s/\A(<<((?:[^<>]+|<[^<>]+>|(?1))*)$ws?>>)//) {                     # Dictionary: <<...>> (including nested dictionaries)
       my @pairs = $self->parse_objects($objects, $2, $offset);
       for (my $i = 0; $i < @pairs; $i++) {
