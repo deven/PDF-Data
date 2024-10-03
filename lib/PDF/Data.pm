@@ -845,7 +845,11 @@ sub parse_objects {
       $hex_string =~ s/$s+//g;
       $hex_string .= "0" if length($hex_string) % 2 == 1;
       push @objects, [ "<$hex_string>", { type => "hex" } ];
-    } elsif (s/\A(\/?[^$ss()<>\[\]{}\/%]+)//) {                                 # /Name, number or other token
+    } elsif (s/\A(\/((?:[^$ss()<>\[\]{}\/%\#]+|\#(?!00)[0-9A-Fa-f]{2})+))//) {  # Name: /Name
+      my ($token, $name) = ($1, $2);
+      $name =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/ge;
+      push @objects, [ $token, { type => "name", name => $name } ];
+    } elsif (s/\A(\/?[^$ss()<>\[\]{}\/%]+)//) {                                 # Number or other token
       # Check for tokens of special interest.
       my $token = $1;
       if ($token eq "obj" or $token eq "R") {                                   # Indirect object/reference: 999 0 obj or 999 0 R
@@ -915,8 +919,6 @@ sub parse_objects {
         push @objects, [ $token, { type => "int" } ];
       } elsif ($token =~ /^[+-]?(?:\d+\.\d*|\.\d+)$/) {                         # Real number: [+-]999.999
         push @objects, [ $token, { type => "real" } ];
-      } elsif ($token =~ /^\/(.*)$/) {                                          # Name: /Name
-        push @objects, [ $token, { type => "name", name => $1 } ];
       } elsif ($token =~ /^(?:true|false)$/) {                                  # Boolean: true or false
         push @objects, [ $token, { type => "bool", bool => $token eq "true" } ];
       } else {                                                                  # Other token
