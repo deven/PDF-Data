@@ -23,10 +23,10 @@ use Scalar::Util        qw[blessed reftype];
 use bytes;
 
 # Basic parsing regular expressions.
-our $n  = qr/(?:\n|\r\n?)/;                       # Match a newline. (LF, CRLF or CR)
-our $ss = '\x00\x09\x0a\x0c\x0d\x20';             # List of PDF whitespace characters.
-our $s  = "[$ss]";                                # Match a single PDF whitespace character.
-our $ws = qr/(?:(?:(?>%[^\r\n]*)?$s+)+)/;         # Match whitespace, including PDF comments.
+our $n  = qr/(?:\n|\r\n?)/;                         # Match a newline. (LF, CRLF or CR)
+our $ss = '\x00\x09\x0a\x0c\x0d\x20';               # List of PDF whitespace characters.
+our $s  = "[$ss]";                                  # Match a single PDF whitespace character.
+our $ws = qr/(?:(?:(?>(?!%%EOF)%[^\r\n]*)?$s+)+)/;  # Match whitespace, including PDF comments except %%EOF marker.
 
 # Declare prototypes.
 sub is_hash ($);
