@@ -54,8 +54,8 @@ sub new {
   # Create an empty document catalog and page tree.
   $pdf->{Root}{Pages} = { Kids => [], Count => 0 };
 
-  # Validate the PDF structure and return the new instance.
-  return $pdf->validate;
+  # Validate the PDF structure if the -validate flag is set, and return the new instance.
+  return $pdf->{-validate} ? $pdf->validate : $pdf;
 }
 
 # Deep copy entire PDF::Data object.
@@ -227,8 +227,8 @@ sub parse_pdf {
     $pdf->{$key} = $args{$key};
   }
 
-  # Validate the PDF structure (unless the -novalidate flag is set) and return the new instance.
-  return $self->{-novalidate} ? $pdf : $pdf->validate;
+  # Validate the PDF structure if the -validate flag is set, and return the new instance.
+  return $pdf->{-validate} ? $pdf->validate : $pdf;
 }
 
 # Generate and write a new PDF file.
@@ -275,8 +275,8 @@ sub pdf_file_data {
   # Set PDF producer.
   $self->{Info}{Producer} = sprintf "(%s)", join " ", __PACKAGE__, $VERSION;
 
-  # Validate the PDF structure.
-  $self->validate;
+  # Validate the PDF structure, unless the -novalidate flag is set.
+  $self->validate unless $self->{-novalidate};
 
   # Array of indirect objects, with lookup hash as first element.
   my $objects = [{}];
