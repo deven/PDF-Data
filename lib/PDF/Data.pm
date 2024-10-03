@@ -188,10 +188,10 @@ sub parse_pdf {
     unless $pdf_version =~ /^1\.[0-7]$/;
 
   # Parsed indirect objects.
-  my $objects = {};
+  my $indirect_objects = {};
 
   # Parse PDF objects.
-  my @objects = $self->parse_objects($objects, \$data, $offset);
+  my @objects = $self->parse_objects($indirect_objects, \$data, $offset);
 
   # Check for startxref value.
   my $startxref;
@@ -217,7 +217,7 @@ sub parse_pdf {
   croak join(": ", $self->{-file} || (), "PDF trailer dictionary not found!\n") unless defined $trailer;
 
   # Resolve indirect object references.
-  $self->resolve_references($objects, $trailer);
+  $self->resolve_references($indirect_objects, $trailer);
 
   # Create a new instance from the parsed data.
   my $pdf = bless $trailer, $class;
@@ -279,7 +279,7 @@ sub pdf_file_data {
   $self->validate unless $self->{-novalidate};
 
   # Array of indirect objects, with lookup hash as first element.
-  my $objects = [{}];
+  my $indirect_objects = [{}];
 
   # Objects seen while generating the PDF file data.
   my $seen = {};
@@ -288,7 +288,7 @@ sub pdf_file_data {
   my $pdf_file_data = "%PDF-1.4\n%\xBF\xF7\xA2\xFE\n\n";
 
   # Write all indirect objects.
-  my $xrefs = $self->write_indirect_objects(\$pdf_file_data, $objects, $seen);
+  my $xrefs = $self->write_indirect_objects(\$pdf_file_data, $indirect_objects, $seen);
 
   # Add cross-reference table.
   my $startxref   = length($pdf_file_data);
@@ -300,7 +300,7 @@ sub pdf_file_data {
 
   # Write trailer dictionary.
   $pdf_file_data .= "trailer ";
-  $self->write_object(\$pdf_file_data, $objects, $seen, $self, 0);
+  $self->write_object(\$pdf_file_data, $indirect_objects, $seen, $self, 0);
 
   # Write startxref value.
   $pdf_file_data =~ s/\n?\z/\n/;
@@ -816,7 +816,7 @@ sub get_hash_node {
 
 # Parse PDF objects into Perl representations.
 sub parse_objects {
-  my ($self, $objects, $data, $offset) = @_;
+  my ($self, $indirect_objects, $data, $offset) = @_;
 
   # Create a local $_ variable.
   local($_) = "";
@@ -840,14 +840,14 @@ sub parse_objects {
     } elsif (/\G(>>|\])/gc) {                                                   # End of dictionary or array.
       last;
     } elsif (/\G<</gc) {                                                        # Dictionary: <<...>>
-      my @pairs = $self->parse_objects($objects, $data, pos);
+      my @pairs = $self->parse_objects($indirect_objects, $data, pos);
       for (my $i = 0; $i < @pairs; $i++) {
         $pairs[$i] = $i % 2 ? $pairs[$i][0] : $pairs[$i][1]{name}
           // croak join(": ", $self->{-file} || (), "Byte offset $pairs[$i][1]{offset} Dictionary key is not a name!\n");
       }
       push @objects, [ { @pairs }, { type => "dict" } ];
     } elsif (/\G\[/gc) {                                                        # Array: [...]
-      my $array = [ map $_->[0], $self->parse_objects($objects, $data, $offset + 1) ];
+      my $array = [ map $_->[0], $self->parse_objects($indirect_objects, $data, $offset + 1) ];
       push @objects, [ $array, { type => "array" }];
     } elsif (/\G(\((?:(?>[^\\()]+)|\\.|(?1))*\))/gc) {                          # String literal: (...) (including nested parens)
       my $string = $1;
@@ -931,8 +931,8 @@ sub parse_objects {
         my ($id, $object) = splice @objects, -2;
         $id->[1]{type} eq "obj" or croak join(": ", $self->{-file} || (), "Byte offset $offset: Invalid indirect object definition!\n");
         $object->[1]{id} = $id->[0];
-        $objects->{$id->[0]} = $object;
-        $objects->{offset}{$object->[1]{offset} // $offset} = $object;
+        $indirect_objects->{$id->[0]} = $object;
+        $indirect_objects->{offset}{$object->[1]{offset} // $offset} = $object;
         push @objects, $object;
       } elsif ($token eq "xref") {                                              # Cross-reference table
         /\G$ws\d+$ws\d+$n(?>\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))+/gc
@@ -1031,13 +1031,13 @@ sub compress_stream {
 
 # Resolve indirect object references.
 sub resolve_references {
-  my ($self, $objects, $object) = @_;
+  my ($self, $indirect_objects, $object) = @_;
 
   # Replace indirect object references with a reference to the actual object.
   if (ref $object and reftype($object) eq "SCALAR") {
     my $id = ${$object};
-    if ($objects->{$id}) {
-      ($object, my $metadata) = @{$objects->{$id}};
+    if ($indirect_objects->{$id}) {
+      ($object, my $metadata) = @{$indirect_objects->{$id}};
       return $object if $metadata->{resolved}++;
     } else {
       ($id, my $gen) = split /-/, $id;
@@ -1050,7 +1050,7 @@ sub resolve_references {
   if (is_hash $object) {
     # Resolve references in hash values.
     foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
-      $object->{$key} = $self->resolve_references($objects, $object->{$key}) if ref $object->{$key};
+      $object->{$key} = $self->resolve_references($indirect_objects, $object->{$key}) if ref $object->{$key};
     }
 
     # For streams, validate the length metadata.
@@ -1065,7 +1065,7 @@ sub resolve_references {
   } elsif (is_array $object) {
     # Resolve references in array values.
     foreach my $i (0 .. $#{$object}) {
-      $object->[$i] = $self->resolve_references($objects, $object->[$i]) if ref $object->[$i];
+      $object->[$i] = $self->resolve_references($indirect_objects, $object->[$i]) if ref $object->[$i];
     }
   }
 
@@ -1075,16 +1075,16 @@ sub resolve_references {
 
 # Write all indirect objects to PDF file data.
 sub write_indirect_objects {
-  my ($self, $pdf_file_data, $objects, $seen) = @_;
+  my ($self, $pdf_file_data, $indirect_objects, $seen) = @_;
 
   # Enumerate all indirect objects.
-  $self->enumerate_indirect_objects($objects);
+  $self->enumerate_indirect_objects($indirect_objects);
 
   # Cross-reference file offsets.
   my $xrefs = ["0000000000 65535 f \n"];
 
   # Loop across indirect objects.
-  for (my $i = 1; $i <= $#{$objects}; $i++) {
+  for (my $i = 1; $i <= $#{$indirect_objects}; $i++) {
     # Save file offset for cross-reference table.
     push @{$xrefs}, sprintf "%010d 00000 n \n", length(${$pdf_file_data});
 
@@ -1092,7 +1092,7 @@ sub write_indirect_objects {
     ${$pdf_file_data} .= "$i 0 obj\n";
 
     # Write the object itself.
-    $self->write_object($pdf_file_data, $objects, $seen, $objects->[$i], 0);
+    $self->write_object($pdf_file_data, $indirect_objects, $seen, $indirect_objects->[$i], 0);
 
     # Write the indirect object trailer.
     ${$pdf_file_data} =~ s/\n?\z/\n/;
@@ -1105,10 +1105,10 @@ sub write_indirect_objects {
 
 # Enumerate all indirect objects.
 sub enumerate_indirect_objects {
-  my ($self, $objects) = @_;
+  my ($self, $indirect_objects) = @_;
 
   # Add top-level PDF indirect objects.
-  $self->add_indirect_objects($objects,
+  $self->add_indirect_objects($indirect_objects,
     $self->{Root}                 ? $self->{Root}                 : (), # Document catalog
     $self->{Info}                 ? $self->{Info}                 : (), # Document information dictionary (if any)
     $self->{Root}{Dests}          ? $self->{Root}{Dests}          : (), # Named destinations (if any)
@@ -1120,15 +1120,15 @@ sub enumerate_indirect_objects {
   );
 
   # Add optional content groups, if any.
-  $self->add_indirect_objects($objects, @{$self->{Root}{OCProperties}{OCGs}}) if $self->{Root}{OCProperties};
+  $self->add_indirect_objects($indirect_objects, @{$self->{Root}{OCProperties}{OCGs}}) if $self->{Root}{OCProperties};
 
   # Enumerate shared objects.
-  $self->enumerate_shared_objects($objects, {}, {}, $self->{Root});
+  $self->enumerate_shared_objects($indirect_objects, {}, {}, $self->{Root});
 
   # Add referenced indirect objects.
-  for (my $i = 1; $i <= $#{$objects}; $i++) {
+  for (my $i = 1; $i <= $#{$indirect_objects}; $i++) {
     # Get object.
-    my $object = $objects->[$i];
+    my $object = $indirect_objects->[$i];
 
     # Check object type.
     if (is_hash $object) {
@@ -1163,18 +1163,18 @@ sub enumerate_indirect_objects {
       }
 
       # Add the objects found, if any.
-      $self->add_indirect_objects($objects, @objects) if @objects;
+      $self->add_indirect_objects($indirect_objects, @objects) if @objects;
     }
   }
 }
 
 # Enumerate shared objects.
 sub enumerate_shared_objects {
-  my ($self, $objects, $seen, $ancestors, $object) = @_;
+  my ($self, $indirect_objects, $seen, $ancestors, $object) = @_;
 
   # Add shared indirect objects.
   if ($seen->{$object}++) {
-    $self->add_indirect_objects($objects, $object) unless $objects->[0]{$object};
+    $self->add_indirect_objects($indirect_objects, $object) unless $indirect_objects->[0]{$object};
     return;
   }
 
@@ -1187,11 +1187,11 @@ sub enumerate_shared_objects {
   # Recurse to check entire object tree.
   if (is_hash $object) {
     foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
-      $self->enumerate_shared_objects($objects, $seen, $ancestors, $object->{$key}) if ref $object->{$key};
+      $self->enumerate_shared_objects($indirect_objects, $seen, $ancestors, $object->{$key}) if ref $object->{$key};
     }
   } elsif (is_array $object) {
     foreach my $obj (@{$object}) {
-      $self->enumerate_shared_objects($objects, $seen, $ancestors, $obj) if ref $obj;
+      $self->enumerate_shared_objects($indirect_objects, $seen, $ancestors, $obj) if ref $obj;
     }
   }
 
@@ -1201,7 +1201,7 @@ sub enumerate_shared_objects {
 
 # Add indirect objects.
 sub add_indirect_objects {
-  my ($self, $objects, @objects) = @_;
+  my ($self, $indirect_objects, @objects) = @_;
 
   # Loop across specified objects.
   foreach my $object (@objects) {
@@ -1209,19 +1209,19 @@ sub add_indirect_objects {
     $object->{-data} //= "" if is_stream $object;
 
     # Check if object exists and is not in the lookup hash yet.
-    if (defined $object and not $objects->[0]{$object}) {
+    if (defined $object and not $indirect_objects->[0]{$object}) {
       # Add the new indirect object to the array.
-      push @{$objects}, $object;
+      push @{$indirect_objects}, $object;
 
       # Save the object ID in the lookup hash, keyed by the object.
-      $objects->[0]{$object} = $#{$objects};
+      $indirect_objects->[0]{$object} = $#{$indirect_objects};
     }
   }
 }
 
 # Write a direct object to the string of PDF file data.
 sub write_object {
-  my ($self, $pdf_file_data, $objects, $seen, $object, $indent) = @_;
+  my ($self, $pdf_file_data, $indirect_objects, $seen, $object, $indent) = @_;
 
   # Make sure the same object isn't written twice.
   if (ref $object and $seen->{$object}++) {
@@ -1245,14 +1245,14 @@ sub write_object {
     foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
       next if $key =~ /^-/;
       my $obj = $object->{$key};
-      $self->add_indirect_objects($objects, $obj) if is_stream $obj;
+      $self->add_indirect_objects($indirect_objects, $obj) if is_stream $obj;
       $self->serialize_object($pdf_file_data, join("", " " x ($indent + 2), "/$key "));
       if (not ref $obj) {
         $self->serialize_object($pdf_file_data, "$obj\n");
-      } elsif ($objects->[0]{$obj}) {
-        $self->serialize_object($pdf_file_data, "$objects->[0]{$obj} 0 R\n");
+      } elsif ($indirect_objects->[0]{$obj}) {
+        $self->serialize_object($pdf_file_data, "$indirect_objects->[0]{$obj} 0 R\n");
       } else {
-        $self->write_object($pdf_file_data, $objects, $seen, $object->{$key}, ref $object ? $indent + 2 : 0);
+        $self->write_object($pdf_file_data, $indirect_objects, $seen, $object->{$key}, ref $object ? $indent + 2 : 0);
       }
     }
     $self->serialize_object($pdf_file_data, join("", " " x $indent, ">>\n"));
@@ -1277,16 +1277,16 @@ sub write_object {
     $self->serialize_object($pdf_file_data, "[\n");
     my $spaces = " " x ($indent + 2);
     foreach my $obj (@{$object}) {
-      $self->add_indirect_objects($objects, $obj) if is_stream $obj;
+      $self->add_indirect_objects($indirect_objects, $obj) if is_stream $obj;
       ${$pdf_file_data} .= $spaces unless $self->{-minify};
       if (not ref $obj) {
         $self->serialize_object($pdf_file_data, $obj);
         $spaces = " ";
-      } elsif ($objects->[0]{$obj}) {
-        $self->serialize_object($pdf_file_data, "$objects->[0]{$obj} 0 R\n");
+      } elsif ($indirect_objects->[0]{$obj}) {
+        $self->serialize_object($pdf_file_data, "$indirect_objects->[0]{$obj} 0 R\n");
         $spaces = " " x ($indent + 2);
       } else {
-        $self->write_object($pdf_file_data, $objects, $seen, $obj, $indent + 2);
+        $self->write_object($pdf_file_data, $indirect_objects, $seen, $obj, $indent + 2);
         $spaces = " " x ($indent + 2);
       }
     }
@@ -1881,7 +1881,7 @@ path.
 
 =head2 parse_objects
 
-  my @objects = $pdf->parse_objects($objects, $data, $offset);
+  my @objects = $pdf->parse_objects($indirect_objects, $data, $offset);
 
 Used by C<$pdf-E<gt>parse_pdf()> to parse PDF objects into Perl representations.
 
@@ -1909,35 +1909,35 @@ fact.
 
 =head2 resolve_references
 
-  $object = $pdf->resolve_references($objects, $object);
+  $object = $pdf->resolve_references($indirect_objects, $object);
 
 Used by C<$pdf-E<gt>parse_pdf()> to replace parsed indirect object references
 with direct references to the objects in question.
 
 =head2 write_indirect_objects
 
-  my $xrefs = $pdf->write_indirect_objects($pdf_file_data, $objects, $seen);
+  my $xrefs = $pdf->write_indirect_objects($pdf_file_data, $indirect_objects, $seen);
 
 Used by C<$pdf-E<gt>write_pdf()> to write all indirect objects to a string of
 new PDF file data.
 
 =head2 enumerate_indirect_objects
 
-  $pdf->enumerate_indirect_objects($objects);
+  $pdf->enumerate_indirect_objects($indirect_objects);
 
 Used by C<$pdf-E<gt>write_indirect_objects()> to identify which objects in the
 PDF data structure need to be indirect objects.
 
 =head2 enumerate_shared_objects
 
-  $pdf->enumerate_shared_objects($objects, $seen, $ancestors, $object);
+  $pdf->enumerate_shared_objects($indirect_objects, $seen, $ancestors, $object);
 
 Used by C<$pdf-E<gt>enumerate_indirect_objects()> to find objects which are
 already shared (referenced from multiple objects in the PDF data structure).
 
 =head2 add_indirect_objects
 
-  $pdf->add_indirect_objects($objects, @objects);
+  $pdf->add_indirect_objects($indirect_objects, @objects);
 
 Used by C<$pdf-E<gt>enumerate_indirect_objects()> and
 C<$pdf-E<gt>enumerate_shared_objects()> to add objects to the list of indirect
@@ -1945,7 +1945,7 @@ objects to be written out.
 
 =head2 write_object
 
-  $pdf->write_object($pdf_file_data, $objects, $seen, $object, $indent);
+  $pdf->write_object($pdf_file_data, $indirect_objects, $seen, $object, $indent);
 
 Used by C<$pdf-E<gt>write_indirect_objects()>, and called by itself recursively,
 to write direct objects out to the string of new PDF file data.
