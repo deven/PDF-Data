@@ -839,7 +839,10 @@ sub parse_objects {
       my $array = [ map $_->[0], $self->parse_objects($objects, $2, $offset) ];
       push @objects, [ $array, { type => "array" }];
     } elsif (s/\A(\((?:(?>[^\\()]+)|\\.|(?1))*\))//) {                          # String literal: (...) (including nested parens)
-      push @objects, [ $1, { type => "string" } ];
+      my $string = $1;
+      $string =~ s/\\$n//g;
+      $string =~ s/$n/\n/g;
+      push @objects, [ $string, { type => "string" } ];
     } elsif (s/\A<([0-9A-Fa-f$ss]*)>//) {                                       # Hexadecimal string literal: <...>
       my $hex_string = lc($1);
       $hex_string =~ s/$s+//g;
