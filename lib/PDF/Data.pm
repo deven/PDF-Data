@@ -176,12 +176,12 @@ sub parse_pdf {
   # Create a new instance using the provided arguments.
   $self = bless \%args, $class;
 
-  # Validate minimal PDF file structure starting with %PDF and ending with %%EOF.
-  my ($pdf_version, $pdf_data) = $data =~ /%PDF-(\d+\.\d+)$s*?$n(.*)%%EOF/s
+  # Validate minimal PDF file structure starting with %PDF and ending with %%EOF, possibly surrounded by garbage.
+  my ($pdf_version) = $data =~ /%PDF-(\d+\.\d+)$s*?$n.*%%EOF/s
     or croak join(": ", $self->{-file} || (), "File does not contain a valid PDF document!\n");
 
-  # Discard startxref value which should be present in any valid PDF, but don't require it.
-  $pdf_data =~ s/\bstartxref$ws?(\d+)$ws\z//s;
+  # Get starting offset of %PDF line.
+  my $offset = $-[0];
 
   # Check PDF version.
   warn join(": ", $self->{-file} || (), "Warning: PDF version $pdf_version not supported!\n")
@@ -191,7 +191,14 @@ sub parse_pdf {
   my $objects = {};
 
   # Parse PDF objects.
-  my @objects = $self->parse_objects($objects, $pdf_data, 0);
+  my @objects = $self->parse_objects($objects, \$data, $offset);
+
+  # Check for startxref value.
+  my $startxref;
+  if ($objects[-2][1]{type} // "" eq "token" and $objects[-2][0] eq "startxref" and $objects[-1][1]{type} eq "int") {
+    $startxref = pop(@objects)->[0];
+    pop @objects;
+  }
 
   # PDF trailer dictionary.
   my $trailer;
@@ -642,7 +649,7 @@ sub validate_content_stream {
   my ($self, $path, $stream) = @_;
 
   # Make sure the content stream can be parsed.
-  my @objects = eval { $self->parse_objects({}, $stream->{-data} // "", 0); };
+  my @objects = eval { $self->parse_objects({}, \($stream->{-data} //= ""), 0); };
   croak join(": ", $self->{-file} || (), "Error: $path: $@") if $@;
 
   # Minify content stream if requested.
@@ -654,7 +661,7 @@ sub minify_content_stream {
   my ($self, $stream, $objects) = @_;
 
   # Parse object stream if necessary.
-  $objects ||= [ $self->parse_objects({}, $stream->{-data} // "", 0) ];
+  $objects ||= [ $self->parse_objects({}, \($stream->{-data} //= ""), 0) ];
 
   # Generate new content stream from objects.
   $stream->{-data} = $self->generate_content_stream($objects);
@@ -665,7 +672,7 @@ sub minify_content_stream {
   # Sanity check.
   die "Content stream serialization failed"
     if dump([map {$_->[0]} @{$objects}]) ne
-       dump([map {$_->[0]} $self->parse_objects({}, $stream->{-data}, 0)]);
+       dump([map {$_->[0]} $self->parse_objects({}, \($stream->{-data} //= ""), 0)]);
 }
 
 # Generate new content stream from objects.
@@ -811,50 +818,52 @@ sub get_hash_node {
 sub parse_objects {
   my ($self, $objects, $data, $offset) = @_;
 
+  # Create a local $_ variable.
+  local($_) = "";
+
+  # Alias the local $_ variable to $data or ${$data}.
+  *_ = ref($data) eq "SCALAR" ? $data : \$data;
+
   # Parsed PDF objects.
   my @objects;
 
-  # Calculate EOF offset.
-  my $eof = $offset + length $data;
-
-  # Copy data for parsing.
-  local $_ = $data;
+  # Set starting position for matching \G in regular expressions.
+  pos = $offset;
 
   # Parse PDF objects in input string.
-  while ($_ ne "") {
-    # Update the file offset.
-    $offset = $eof - length $_;
-
+  while (($offset = pos) < length) {
     # Parse the next PDF object.
-    if (s/\A$ws//) {                                                            # Strip leading whitespace/comments.
+    if (/\G$ws/gc) {                                                            # Strip leading whitespace/comments.
       next;
-    } elsif (s/\A%%EOF//) {                                                     # End of PDF file marker.
+    } elsif (/\G%%EOF/gc) {                                                     # End of PDF file marker.
       last;
-    } elsif (s/\A(<<((?:[^<>]+|<[^<>]+>|(?1))*)$ws?>>)//) {                     # Dictionary: <<...>> (including nested dictionaries)
-      my @pairs = $self->parse_objects($objects, $2, $offset);
+    } elsif (/\G(>>|\])/gc) {                                                   # End of dictionary or array.
+      last;
+    } elsif (/\G<</gc) {                                                        # Dictionary: <<...>>
+      my @pairs = $self->parse_objects($objects, $data, pos);
       for (my $i = 0; $i < @pairs; $i++) {
         $pairs[$i] = $i % 2 ? $pairs[$i][0] : $pairs[$i][1]{name}
-          // croak join(": ", $self->{-file} || (), "Byte offset $offset: Dictionary key is not a name!\n");
+          // croak join(": ", $self->{-file} || (), "Byte offset $pairs[$i][1]{offset} Dictionary key is not a name!\n");
       }
       push @objects, [ { @pairs }, { type => "dict" } ];
-    } elsif (s/\A(\[((?:(?>[^\[\]]+)|(?1))*)\])//) {                            # Array: [...] (including nested arrays)
-      my $array = [ map $_->[0], $self->parse_objects($objects, $2, $offset) ];
+    } elsif (/\G\[/gc) {                                                        # Array: [...]
+      my $array = [ map $_->[0], $self->parse_objects($objects, $data, $offset + 1) ];
       push @objects, [ $array, { type => "array" }];
-    } elsif (s/\A(\((?:(?>[^\\()]+)|\\.|(?1))*\))//) {                          # String literal: (...) (including nested parens)
+    } elsif (/\G(\((?:(?>[^\\()]+)|\\.|(?1))*\))/gc) {                          # String literal: (...) (including nested parens)
       my $string = $1;
       $string =~ s/\\$n//g;
       $string =~ s/$n/\n/g;
       push @objects, [ $string, { type => "string" } ];
-    } elsif (s/\A<([0-9A-Fa-f$ss]*)>//) {                                       # Hexadecimal string literal: <...>
+    } elsif (/\G<([0-9A-Fa-f$ss]*)>/gc) {                                       # Hexadecimal string literal: <...>
       my $hex_string = lc($1);
       $hex_string =~ s/$s+//g;
       $hex_string .= "0" if length($hex_string) % 2 == 1;
       push @objects, [ "<$hex_string>", { type => "hex" } ];
-    } elsif (s/\A(\/((?:[^$ss()<>\[\]{}\/%\#]+|\#(?!00)[0-9A-Fa-f]{2})+))//) {  # Name: /Name
+    } elsif (/\G(\/((?:[^$ss()<>\[\]{}\/%\#]+|\#(?!00)[0-9A-Fa-f]{2})+))/gc) {  # Name: /Name
       my ($token, $name) = ($1, $2);
       $name =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/ge;
       push @objects, [ $token, { type => "name", name => $name } ];
-    } elsif (s/\A(\/?[^$ss()<>\[\]{}\/%]+)//) {                                 # Number or other token
+    } elsif (/\G(\/?[^$ss()<>\[\]{}\/%]+)/gc) {                                 # Number or other token
       # Check for tokens of special interest.
       my $token = $1;
       if ($token eq "obj" or $token eq "R") {                                   # Indirect object/reference: 999 0 obj or 999 0 R
@@ -868,7 +877,7 @@ sub parse_objects {
           { type => $token, offset => $id->[1]{offset} }
         ];
       } elsif ($token eq "ID") {                                                # Inline image data: ID ... EI
-        s/\A$s(.*?)(?:\r\n|$s)?EI$s//s or croak join(": ", $self->{-file} || (), "Byte offset $offset: Invalid inline image data!\n");
+        /\G$s(.*?)(?:\r\n|$s)?EI$s/sgc or croak join(": ", $self->{-file} || (), "Byte offset $offset: Invalid inline image data!\n");
         my $image = $1;
 
         # TODO: Apply encoding filters?
@@ -881,7 +890,7 @@ sub parse_objects {
         $_ = $_->[0] for $id, $stream;
         defined(my $length = $stream->{Length})
           or warn join(": ", $self->{-file} || (), "Byte offset $offset: Object #$id: Stream length not found in metadata!\n");
-        s/\A\r?\n//;
+        /\G\r?\n/gc;
 
         # Check for unsupported stream types.
         my $type = $stream->{Type} // "";
@@ -891,21 +900,31 @@ sub parse_objects {
           croak join(": ", $self->{-file} || (), "Byte offset $offset: PDF 1.5 cross-reference streams are not supported!\n");
         }
 
+        # Save the starting offset for the stream.
+        my $pos = pos;
+
+        # If the stream length is declared, make sure it is valid.
+        if (defined $length && !ref($length)) {
+          pos = $pos + $length;
+          undef $length unless /\G($s*endstream$ws)/gc;
+          pos = $pos;
+        }
+
         # If the declared stream length is missing or invalid, determine the shortest possible length to make the stream valid.
-        unless (defined($length) && !ref($length) && substr($_, $length) =~ /\A($s*endstream$ws)/) {
-          if (/\A((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s/) {
-            $length = length($1);
+        unless (defined($length) && !ref($length)) {
+          if (/\G((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s/gc) {
+            $length = $+[1] - $-[1];
           } else {
             croak join(": ", $self->{-file} || (), "Byte offset $offset: Invalid stream definition!\n");
           }
         }
 
-        $stream->{-data}  = substr($_, 0, $length);
+        $stream->{-data}  = substr($_, $pos, $length);
         $stream->{-id}    = $id;
         $stream->{Length} = $length;
 
-        $_ = substr($_, $length);
-        s/\A$s*endstream$ws//;
+        pos = $pos + $length;
+        /\G$s*endstream$ws/gc;
 
         $self->filter_stream($stream) if $stream->{Filter};
       } elsif ($token eq "endobj") {                                            # Indirect object definition: 999 0 obj ... endobj
@@ -916,7 +935,7 @@ sub parse_objects {
         $objects->{offset}{$object->[1]{offset} // $offset} = $object;
         push @objects, $object;
       } elsif ($token eq "xref") {                                              # Cross-reference table
-        s/\A$ws\d+$ws\d+$n(?>\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))+//
+        /\G$ws\d+$ws\d+$n(?>\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))+/gc
           or croak join(": ", $self->{-file} || (), "Byte offset $offset: Invalid cross-reference table!\n");
       } elsif ($token =~ /^[+-]?\d+$/) {                                        # Integer: [+-]999
         push @objects, [ $token, { type => "int" } ];
@@ -928,13 +947,13 @@ sub parse_objects {
         push @objects, [ $token, { type => "token" } ];
       }
     } else {
-      s/\A([^\r\n]*).*\z/$1/s;
-      croak join(": ", $self->{-file} || (), "Byte offset $offset: Parse error on input: \"$_\"\n");
+      /\G([^\r\n]*)/;
+      croak join(": ", $self->{-file} || (), "Byte offset $offset: Parse error on input: \"$1\"\n");
     }
 
     # Update offset/length of last object.
     $objects[-1][1]{offset} //= $offset;
-    $objects[-1][1]{length}   = $eof - length($_) - $objects[-1][1]{offset};
+    $objects[-1][1]{length} //= $+[0] - $objects[-1][1]{offset};
   }
 
   # Return parsed PDF objects.
@@ -946,7 +965,7 @@ sub parse_data {
   my ($self, $data) = @_;
 
   # Parse PDF objects from data.
-  my @objects = $self->parse_objects({}, $data // "", 0);
+  my @objects = $self->parse_objects({}, \($data //= ""), 0);
 
   # Discard parser metadata.
   @objects = map { $_->[0]; } @objects;
