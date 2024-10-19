@@ -1017,11 +1017,13 @@ sub parse_objects {
       } elsif ($token eq "stream") {                                            # Stream content: stream ... endstream
         my ($id, $stream) = @objects[-2,-1];
         $stream->{type} eq "dict" or croak join(": ", $self->file || (), "Byte offset ${$offset}: Stream dictionary missing!\n");
+        $stream->{type} = "stream";
         $id->{type} eq "obj" or croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid indirect object definition!\n");
         $_ = $_->{data} for $id, $stream;
         defined(my $length = $stream->{Length})
-          or warn join(": ", $self->file || (), "Byte offset ${$offset}: Object #$id: Stream length not found in metadata!\n");
-        /\G\r?\n/gc;
+          or carp join(": ", $self->file || (), "Byte offset ${$offset}: Stream #$id: Stream length not found in metadata!\n");
+        /\G\r?\n/gc
+          or die join(": ", $self->file || (), "Byte offset " . pos . ": Stream #$id: Parsing error!\n");
 
         # Check for unsupported stream types.
         my $type = $stream->{Type} // "";
@@ -1046,16 +1048,18 @@ sub parse_objects {
           if (/\G((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s/gc) {
             $length = $+[1] - $-[1];
           } else {
-            croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid stream definition!\n");
+            croak join(": ", $self->file || (), "Byte offset ${$offset}: Stream #$id: Invalid stream definition!\n");
           }
         }
 
-        $stream->{-data}  = substr($_, $pos, $length);
-        $stream->{-id}    = $id;
-        $stream->{Length} = $length;
+        $stream->{-data}   = substr($_, $pos, $length);
+        $stream->{-id}     = $id;
+        $stream->{-offset} = ${$offset};
+        $stream->{Length}  = $length;
 
-        pos = $pos + $length;
-        /\G$s*endstream$ws/gc;
+        ${$offset} = pos = $pos + $length;
+        /\G$s*endstream$ws/gc
+          or die join(": ", $self->file || (), "Byte offset ${$offset}: Stream #$id: Parsing error!\n");
 
         $self->filter_stream($stream) if $stream->{Filter};
       } elsif ($token eq "endobj") {                                            # Indirect object definition: 999 0 obj ... endobj
@@ -1091,7 +1095,7 @@ sub parse_objects {
         };
       }
     } else {
-      /\G([^\r\n]*)/;
+      /\G([^\r\n]*)/gc;
       croak join(": ", $self->file || (), "Byte offset ${$offset}: Parse error on input: \"$1\"\n");
     }
 
