@@ -1560,7 +1560,7 @@ sub dump_object {
     } elsif (is_hash $object) {
       # Hash object.
       $seen->{$object} = $label;
-      if (is_stream $object) {
+      if (is_stream $object and not $object->{Root}) {
         $output = "(STREAM)";
       } else {
         $label =~ s/(?<=\w)$/->/;
