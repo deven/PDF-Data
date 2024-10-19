@@ -224,6 +224,12 @@ sub parse_pdf {
     }
   }
 
+  # The trailer dictionary can be merged into a cross-reference stream dictionary.
+  unless ($trailer) {
+    my $xref = $indirect_objects->{offset}{$startxref};
+    $trailer = $xref->{data} if $xref and $xref->{type} eq "stream" and ($xref->{data}{Type} // "") eq "/XRef";
+  }
+
   # Make sure trailer dictionary was found.
   croak join(": ", $self->file || (), "PDF trailer dictionary not found!\n") unless defined $trailer;
 
@@ -1058,9 +1064,9 @@ sub parse_objects {
       } elsif ($token eq "endobj") {                                            # Indirect object definition: 999 0 obj ... endobj
         my ($id, $object) = splice @objects, -2;
         $id->{type} eq "obj" or croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid indirect object definition!\n");
-        $object->{id} = $id->{data};
-        $indirect_objects->{$id->{data}} = $object;
-        $indirect_objects->{offset}{$object->{offset} // ${$offset}} = $object;
+        $object->{id}                              = $id->{data};
+        $indirect_objects->{$id->{data}}           = $object;
+        $indirect_objects->{offset}{$id->{offset}} = $object;
         push @objects, $object;
       } elsif ($token eq "xref") {                                              # Cross-reference table
         /\G$ws\d+$ws\d+$n(?>\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))+/gc
