@@ -215,7 +215,7 @@ sub parse_pdf {
   my $trailer;
 
   # Find trailer dictionary.
-  for (my $i = 0; $i < @objects; $i++) {
+  for (my $i = $#objects; $i >= 0; $i--) {
     if ($objects[$i]{data} eq "trailer") {
       $i < $#objects and $objects[$i + 1]{type} eq "dict"
         or croak join(": ", $self->file || (), "Byte offset $objects[$i]{offset}: Invalid trailer dictionary!\n");
