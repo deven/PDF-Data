@@ -893,10 +893,8 @@ sub get_hash_node {
 sub parse_objects {
   my ($self, $indirect_objects, $data, $offset_arg) = @_;
 
-  # Create a local $_ variable.
+  # Alias local $_ variable to $data or ${$data}.
   local($_) = "";
-
-  # Alias the local $_ variable to $data or ${$data}.
   *_ = ref($data) eq "SCALAR" ? $data : \$data;
 
   # Make sure offset is a reference.
@@ -1025,14 +1023,6 @@ sub parse_objects {
         /\G\r?\n/gc
           or die join(": ", $self->file || (), "Byte offset " . pos . ": Stream #$id: Parsing error!\n");
 
-        # Check for unsupported stream types.
-        my $type = $stream->{Type} // "";
-        if ($type eq "/ObjStm") {
-          croak join(": ", $self->file || (), "Byte offset ${$offset}: PDF 1.5 object streams are not supported!\n");
-        } elsif ($type eq "/XRef") {
-          croak join(": ", $self->file || (), "Byte offset ${$offset}: PDF 1.5 cross-reference streams are not supported!\n");
-        }
-
         # Save the starting offset for the stream.
         my $pos = pos;
 
@@ -1062,6 +1052,9 @@ sub parse_objects {
           or die join(": ", $self->file || (), "Byte offset ${$offset}: Stream #$id: Parsing error!\n");
 
         $self->filter_stream($stream) if $stream->{Filter};
+
+        # Parse object streams.
+        $self->parse_object_stream($indirect_objects, $stream) if ($stream->{Type} // "") eq "/ObjStm";
       } elsif ($token eq "endobj") {                                            # Indirect object definition: 999 0 obj ... endobj
         my ($id, $object) = splice @objects, -2;
         $id->{type} eq "obj" or croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid indirect object definition!\n");
@@ -1120,6 +1113,58 @@ sub parse_data {
 
   # Return parsed objects.
   return wantarray ? @objects : $objects[0];
+}
+
+# Parse an object stream.
+sub parse_object_stream {
+  my ($self, $indirect_objects, $stream) = @_;
+
+  # Alias local $_ variable to the stream data.
+  local($_) = "";
+  *_ = \$stream->{-data};
+
+  my $n = $stream->{N}
+    or croak join(": ", $self->file || (), "Byte offset $stream->{-offset}: Stream #$stream->{-id}: Object count not found in object stream metadata!\n");
+  $n =~ /^\d+$/
+    or croak join(": ", $self->file || (), "Byte offset $stream->{-offset}: Stream #$stream->{-id}: Object count \"$n\" in object stream metadata is not an integer!\n");
+  my $first = $stream->{First}
+    or croak join(": ", $self->file || (), "Byte offset $stream->{-offset}: Stream #$stream->{-id}: First object offset not found in object stream metadata!\n");
+  $first =~ /^\d+$/
+    or croak join(": ", $self->file || (), "Byte offset $stream->{-offset}: Stream #$stream->{-id}: First object offset \"$first\" in object stream metadata is not an integer!\n");
+  my $extends = $stream->{Extends};
+  not defined $extends or (ref $extends and reftype($extends) eq "SCALAR")
+    or croak join(": ", $self->file || (), "Byte offset $stream->{-offset}: Stream #$stream->{-id}: Extends argument in object stream metadata is invalid!\n");
+
+  pos = 0;
+  my @pairs;
+  while (@pairs < $n) {
+    my $stream_offset = pos;
+    if (/\G(\d+)$s+(\d+)$s+/gc) {
+      push @pairs, [$1, $2];
+    } else {
+      croak join(": ", $self->file || (), "Byte offset $stream->{-offset}: Stream #$stream->{-id}: Stream byte offset $stream_offset",
+        sprintf("Object stream should start with %d pair%s of integers; found %d pair%s of integers!\n", $n, $n == 1 ? "" : "s", scalar @pairs, @pairs == 1 ? "" : "s"));
+    }
+  }
+
+  $first //= pos;
+  my @objects = $self->parse_objects($indirect_objects, \$stream->{-data}, $first);
+
+  foreach my $pair (@pairs) {
+    my ($id, $offset) = @{$pair};
+    $offset += $first;
+    my $object = shift @objects
+      or croak join(": ", $self->file || (), "Byte offset $stream->{-offset}: Stream #$stream->{-id}: Object stream data is truncated; object #$id at stream offset $offset not found!\n");
+
+    $offset = $object->{offset};
+    $object->{type} ne "R"
+      or carp join(": ", $self->file || (), "Byte offset $stream->{-offset}: Stream #$stream->{-id}: Compressed object #$id at stream offset $offset is an illegal indirect object reference!\n");
+
+    $object->{id} = $id;
+    $indirect_objects->{$id} = $object;
+
+    push @{$stream->{-objects}}, $object;
+  }
 }
 
 # Filter stream data.
@@ -1210,6 +1255,22 @@ sub resolve_references {
       $object->{Length} ||= $len;
       $len == $object->{Length}
         or warn join(": ", $self->file || (), "Warning: Object #$object->{-id}: Stream length does not match metadata! ($len != $object->{Length})\n");
+
+      # Resolve references in object streams.
+      if (my $objects = $object->{-objects}) {
+        foreach my $i (0 .. $#{$objects}) {
+          $objects->[$i] = $self->resolve_references($indirect_objects, $objects->[$i]) if ref $objects->[$i];
+        }
+
+        # Extend object collections.
+        if (my $extends = $object->{Extends}) {
+          my $id   = ${$extends};
+          $extends = $indirect_objects->{$extends}
+            or croak join(": ", $self->file || (), "Byte offset $object->{-offset}: Stream #$object->{-id}: Extends argument in object stream metadata refers to non-existent indirect object #$id!\n");
+          push @{$extends->{-objects}}, @{delete $object->{-objects}};
+          $object->{Extends} = $extends;
+        }
+      }
     }
   } elsif (is_array $object) {
     # Resolve references in array values.
@@ -2060,6 +2121,12 @@ Used by C<$pdf-E<gt>parse_pdf()> to parse PDF objects into Perl representations.
   my @objects = $pdf->parse_data($data);
 
 Uses C<$pdf-E<gt>parse_objects()> to parse PDF objects from standalone PDF data.
+
+=head2 parse_object_stream
+
+  $pdf->parse_object_stream($indirect_objects, $stream);
+
+Used by C<$pdf-E<gt>parse_objects()> to parse PDF 1.5 object streams.
 
 =head2 filter_stream
 
