@@ -918,7 +918,7 @@ sub parse_objects {
     if (/\G$ws/gc) {                                                            # Strip leading whitespace/comments.
       next;
     } elsif (/\G%%EOF/gc) {                                                     # End of PDF file marker.
-      last;
+      next;
     } elsif (/\G(>>|\])/gc) {                                                   # End of dictionary or array.
       ${$offset} = pos;
       push @objects, {
