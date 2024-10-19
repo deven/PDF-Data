@@ -177,7 +177,7 @@ sub parse_pdf {
   $self = bless \%args, $class;
 
   # Validate minimal PDF file structure starting with %PDF and ending with %%EOF, possibly surrounded by garbage.
-  my ($pdf_version) = $data =~ /%PDF-(\d+\.\d+)$s*?$n.*%%EOF/s
+  my ($pdf_version, $binary_signature) = $data =~ /%PDF-(\d+\.\d+)$s*?$n(?:$s*%$s*([\x80-\xff]{4,}).*?$n)?.*%%EOF/s
     or croak join(": ", $self->{-file} || (), "File does not contain a valid PDF document!\n");
 
   # Get starting offset of %PDF line.
@@ -186,6 +186,10 @@ sub parse_pdf {
   # Check PDF version.
   warn join(": ", $self->{-file} || (), "Warning: PDF version $pdf_version not supported!\n")
     unless $pdf_version =~ /^1\.[0-7]$/;
+
+  # Save parsed PDF version number and binary signature (if any).
+  $self->{-pdf_version}      = $pdf_version;
+  $self->{-binary_signature} = $binary_signature if $binary_signature;
 
   # Parsed indirect objects.
   my $indirect_objects = {};
@@ -285,7 +289,9 @@ sub pdf_file_data {
   my $seen = {};
 
   # Start with PDF header.
-  my $pdf_file_data = "%PDF-1.4\n%\xBF\xF7\xA2\xFE\n\n";
+  my $pdf_version      = $self->{-pdf_version} ||= 1.4;
+  my $binary_signature = $self->binary_signature;
+  my $pdf_file_data    = sprintf "%%PDF-%3.1f\n%%%s\n\n", $pdf_version, $binary_signature;
 
   # Write all indirect objects.
   my $xrefs = $self->write_indirect_objects(\$pdf_file_data, $indirect_objects, $seen);
@@ -311,6 +317,68 @@ sub pdf_file_data {
 
   # Return PDF file data.
   return $pdf_file_data;
+}
+
+# Construct PDF::Data binary signature.
+sub binary_signature {
+  my ($self) = @_;
+
+  # Typical binary signature used by Adobe's PDF library.
+  my $adobe_binary_signature = "\xBF\xF7\xA2\xFE";
+
+  # Check for -preserve_binary_signature option to suppress normal PDF::Data binary signature.
+  if ($self->{-preserve_binary_signature}) {
+    # Default to Adobe binary signature if none is set.
+    $self->{-binary_signature} ||= $adobe_binary_signature;
+  } else {
+    # Carefully encode the author's initials into the PDF::Data binary signature.  This only works for THIS author!
+    my $author_initials = "DTC";
+    my @initials        = split //, $author_initials;
+    my $middle_initial  = splice @initials, 1, 1;
+    my ($xxx, $y, $z)   = unpack "A3AA", sprintf("%05b", ord($middle_initial) - 64);
+
+    # Encode the PDF::Data major/minor version numbers, within encoding limits (between v1.0 and v8.63).
+    my ($major, $minor) = $PDF::Data::VERSION->normal =~ /(\d+)\.(\d+)/;
+    $major = 8  if $major > 8;
+    $minor = 63 if $major > 8 or $minor > 63;
+
+    #
+    # Construct the 4-byte binary signature using a carefully-designed bit pattern which guarantees:
+    #
+    # 1. Each byte has the high-order bit set, as recommended by the PDF specification to aid binary file detection.
+    # 2. Interpreting the bytes as Latin-1 encoding would result in a nonsensical string.
+    # 3. Interpreting the bytes as UTF-8 would be invalid because because all four bytes have both high-order bits set,
+    #    which would indicate initial bytes of a multi-byte sequence.  Since every valid multi-byte sequence requires
+    #    one or more continuation bytes (with bit 6 clear) to follow the initial byte, this byte sequence constitutes
+    #    an invalid encoding for UTF-8.
+    # 4. Interpreting the bytes as UTF-16 would also be invalid, because one of the two 16-bit values would be a low
+    #    surrogate code in the U+DC00 to U+DFFF range, and the other 16-bit value would not be a surrogate code.  Since
+    #    surrogate codes must be used in pairs, that makes this byte sequence an invalid encoding for UTF-16 as well.
+    # 5. Interpreting the bytes as UCS-2 would also be invalid, because the surrogate code point is not a valid Unicode
+    #    character code point, and the other 16-bit value would be a code point in the range of U+E000 to U+EFFF, which
+    #    is entirely contained within the Unicode Private Use Area code point range of U+E000 to U+F8FF.
+    # 6. Interpreting the bytes as UTF-32 or UCS-4 would also be invalid, because it would represent a code point far
+    #    outside the range of valid character code points from U+0000 to U+10FFFF.
+    # 7. All of these guarantees for 2-byte encodings (UTF-16 and UCS-2) and 4-byte encodings (UTF-32 and UCS-4) still
+    #    hold true for both big-endian and little-endian interpretations, and regardless of byte alignment, because the
+    #    high-order bytes of each of the special code point ranges (U+DC00 to U+DFFF and U+E000 to U+EFFF) occur twice,
+    #    at both even and odd byte offsets.  That makes this algorithm agnostic to endianness.
+    #
+    # However, note that this algorithm was carefully designed to meet the above guarantees for THIS particular author.
+    # Attempting to use this exact algorithm with different author initials would almost certainly fail.
+    #
+    my $signature = pack "B32", sprintf "11011%3s111%1s%02b%02b111%1s%04b%04b%04b",
+      $xxx, $y, $major & 0x03, $minor >> 4, $z, $minor & 0x0f, map hex, @initials;
+
+    # Swap bytes for major version numbers higher than version 4, effectively encoding a third bit for major version.
+    $signature = pack "vv", unpack "nn", $signature if $major > 4;
+
+    # Save the final PDF::Data binary signature in the PDF::Data object.
+    $self->{-binary_signature} = $signature;
+  }
+
+  # Return the saved binary signature for this PDF.
+  return $self->{-binary_signature};
 }
 
 # Dump internal structure of PDF file.
@@ -1663,6 +1731,23 @@ Returns a 6-element transformation matrix representing counterclockwise rotation
 of the coordinate system by the specified angle (in degrees).
 
 =head1 INTERNAL METHODS
+
+=head2 binary_signature
+
+Used by C<$pdf-E<gt>pdf_file_data()> to determine the 4-byte binary signature
+to use on the comment line immediately following the %PDF header line.
+
+By default, PDF::Data generates custom binary signature which carefully encodes
+the author's initials (DTC) and the major/minor version number of PDF::Data
+(from v1.0 to v8.63), in such a way that the binary signature is guaranteed to
+be invalid for all Unicode encodings: UTF-8, UTF-16, UTF-16BE, UTF-16LE, UTF-32,
+UTF-32BE and UTF-32LE.  (It will also be nonsensical if interpreted as Latin-1.)
+
+The C<$pdf-E<gt>{-preserve_binary_signature}> flag can be used to suppress this
+PDF::Data binary signature.  If this flag is set, the algorithm described above
+will be skipped and the generated PDF data will use the binary signature already
+stored in the PDF::Data object (if any), defaulting to the typical Adobe binary
+signature used by Adobe's PDF library.
 
 =head2 validate
 
