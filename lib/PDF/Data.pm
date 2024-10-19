@@ -917,19 +917,36 @@ sub parse_objects {
       last;
     } elsif (/\G(>>|\])/gc) {                                                   # End of dictionary or array.
       ${$offset} = pos;
+      push @objects, {
+        data => $1,
+        type => "token",
+      };
       last;
     } elsif (/\G<</gc) {                                                        # Dictionary: <<...>>
+      my $dict_offset = ${$offset};
+
       ${$offset} = pos;
       my @pairs = $self->parse_objects($indirect_objects, $data, $offset);
       pos = ${$offset};
+
+      my $token = pop @pairs
+        or croak join(": ", $self->file || (), "Byte offset $dict_offset: Parse error: \"<<\" token found without matching \">>\" token!\n");
+      $token->{data} eq ">>"
+        or croak join(": ", $self->file || (), "Byte offset $dict_offset: Parse error: \">>\" token found without matching \"<<\" token!\n");
 
       for (my $i = 0; $i < @pairs; $i++) {
         $pairs[$i] = $i % 2 ? $pairs[$i]{data} : ($pairs[$i]{name}
           // croak join(": ", $self->file || (), "Byte offset $pairs[$i]{offset}: Dictionary key \"$pairs[$i]{data}\" is not a name!\n"));
       }
+
+      @pairs % 2 == 0
+        or croak join(": ", $self->file || (), "Byte offset $dict_offset: Parse error: Missing value before \">>\" token!\n");
+
       push @objects, {
-        data => { @pairs },
-        type => "dict",
+        data   => { @pairs },
+        type   => "dict",
+        offset => $dict_offset,
+        length => pos() - $dict_offset,
       };
     } elsif (/\G\[/gc) {                                                        # Array: [...]
       my $array_offset = ${$offset};
@@ -938,9 +955,16 @@ sub parse_objects {
       my @array_objects = $self->parse_objects($indirect_objects, $data, $offset);
       pos = ${$offset};
 
+      my $token = pop @array_objects
+        or croak join(": ", $self->file || (), "Byte offset $array_offset: Parse error: \"[\" token found without matching \"]\" token!\n");
+      $token->{data} eq "]"
+        or croak join(": ", $self->file || (), "Byte offset $array_offset: Parse error: \"]\" token found without matching \"[\" token!\n");
+
       push @objects, {
-        data => [ map $_->{data}, @array_objects ],
-        type => "array",
+        data   => [ map $_->{data}, @array_objects ],
+        type   => "array",
+        offset => $array_offset,
+        length => pos() - $array_offset,
       };
     } elsif (/\G(\((?:(?>[^\\()]+)|\\.|(?1))*\))/gc) {                          # String literal: (...) (including nested parens)
       my $string = $1;
