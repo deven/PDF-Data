@@ -199,7 +199,7 @@ sub parse_pdf {
 
   # Check for startxref value.
   my $startxref;
-  if ($objects[-2]{type} // "" eq "token" and $objects[-2]{data} eq "startxref" and $objects[-1]{type} eq "int") {
+  if (($objects[-2]{type} // "") eq "token" and $objects[-2]{data} eq "startxref" and $objects[-1]{type} eq "int") {
     $startxref = pop(@objects)->{data};
     pop @objects;
   }
