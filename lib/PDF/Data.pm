@@ -1069,8 +1069,20 @@ sub parse_objects {
         $indirect_objects->{offset}{$id->{offset}} = $object;
         push @objects, $object;
       } elsif ($token eq "xref") {                                              # Cross-reference table
-        /\G$ws\d+$ws\d+$n(?>\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))+/gc
-          or croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid cross-reference table!\n");
+        # Parse one or more cross-reference subsections.
+        while (/\G$ws(\d+)$ws(\d+)$n/gc) {
+          my ($first, $count) = ($1, $2);
+          for (my $i = 0; $i < $count; $i++) {
+            if (/\G(\d{10})\ (\d{5})\ ([fn])(?:\ [\r\n]|\r\n)/gc) {
+              # my ($offset, $generation, $keyword) = ($1, $2, $3);
+              # my $id = $first + $i
+              # my $id = join("-", $first + $i, $generation || ());
+              # $xref->{$id} = int($offset);
+            } else {
+              carp join(": ", $self->file || (), "Byte offset " . pos . ": Invalid cross-reference table!\n");
+            }
+          }
+        }
       } elsif ($token =~ /^[+-]?\d+$/) {                                        # Integer: [+-]999
         push @objects, {
           data => $token,
