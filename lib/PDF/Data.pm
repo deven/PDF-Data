@@ -202,7 +202,7 @@ sub parse_pdf {
   my $indirect_objects = {};
 
   # Parse PDF objects.
-  my @objects = $self->parse_objects($indirect_objects, \$data, $offset);
+  my @objects = $self->parse_objects($indirect_objects, \$data, \$offset);
 
   # Check for startxref value.
   my $startxref;
@@ -891,7 +891,7 @@ sub get_hash_node {
 
 # Parse PDF objects into Perl representations.
 sub parse_objects {
-  my ($self, $indirect_objects, $data, $offset) = @_;
+  my ($self, $indirect_objects, $data, $offset_arg) = @_;
 
   # Create a local $_ variable.
   local($_) = "";
@@ -899,23 +899,30 @@ sub parse_objects {
   # Alias the local $_ variable to $data or ${$data}.
   *_ = ref($data) eq "SCALAR" ? $data : \$data;
 
+  # Make sure offset is a reference.
+  my $offset = ref $offset_arg ? $offset_arg : \$offset_arg;
+
   # Parsed PDF objects.
   my @objects;
 
   # Set starting position for matching \G in regular expressions.
-  pos = $offset;
+  pos = ${$offset};
 
   # Parse PDF objects in input string.
-  while (($offset = pos) < length) {
+  while ((${$offset} = pos) < length) {
     # Parse the next PDF object.
     if (/\G$ws/gc) {                                                            # Strip leading whitespace/comments.
       next;
     } elsif (/\G%%EOF/gc) {                                                     # End of PDF file marker.
       last;
     } elsif (/\G(>>|\])/gc) {                                                   # End of dictionary or array.
+      ${$offset} = pos;
       last;
     } elsif (/\G<</gc) {                                                        # Dictionary: <<...>>
-      my @pairs = $self->parse_objects($indirect_objects, $data, pos);
+      ${$offset} = pos;
+      my @pairs = $self->parse_objects($indirect_objects, $data, $offset);
+      pos = ${$offset};
+
       for (my $i = 0; $i < @pairs; $i++) {
         $pairs[$i] = $i % 2 ? $pairs[$i]{data} : ($pairs[$i]{name}
           // croak join(": ", $self->file || (), "Byte offset $pairs[$i]{offset}: Dictionary key \"$pairs[$i]{data}\" is not a name!\n"));
@@ -925,9 +932,14 @@ sub parse_objects {
         type => "dict",
       };
     } elsif (/\G\[/gc) {                                                        # Array: [...]
-      my $array = [ map $_->{data}, $self->parse_objects($indirect_objects, $data, $offset + 1) ];
+      my $array_offset = ${$offset};
+
+      ${$offset} = pos;
+      my @array_objects = $self->parse_objects($indirect_objects, $data, $offset);
+      pos = ${$offset};
+
       push @objects, {
-        data => $array,
+        data => [ map $_->{data}, @array_objects ],
         type => "array",
       };
     } elsif (/\G(\((?:(?>[^\\()]+)|\\.|(?1))*\))/gc) {                          # String literal: (...) (including nested parens)
@@ -961,7 +973,7 @@ sub parse_objects {
         my ($id, $gen) = splice @objects, -2;
         my $type = $token eq "R" ? "reference" : "definition";
         "$id->{type} $gen->{type}" eq "int int"
-          or croak join(": ", $self->file || (), "Byte offset $offset: $id->{data} $gen->{data} $token: Invalid indirect object $type!\n");
+          or croak join(": ", $self->file || (), "Byte offset ${$offset}: $id->{data} $gen->{data} $token: Invalid indirect object $type!\n");
         my $new_id = join("-", $id->{data}, $gen->{data} || ());
         push @objects, {
           data   => ($token eq "R" ? \$new_id : $new_id),
@@ -969,7 +981,7 @@ sub parse_objects {
           offset => $id->{offset},
         };
       } elsif ($token eq "ID") {                                                # Inline image data: ID ... EI
-        /\G$s(.*?)(?:\r\n|$s)?EI$s/sgc or croak join(": ", $self->file || (), "Byte offset $offset: Invalid inline image data!\n");
+        /\G$s(.*?)(?:\r\n|$s)?EI$s/sgc or croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid inline image data!\n");
         my $image = $1;
 
         # TODO: Apply encoding filters?
@@ -980,19 +992,19 @@ sub parse_objects {
         };
       } elsif ($token eq "stream") {                                            # Stream content: stream ... endstream
         my ($id, $stream) = @objects[-2,-1];
-        $stream->{type} eq "dict" or croak join(": ", $self->file || (), "Byte offset $offset: Stream dictionary missing!\n");
-        $id->{type} eq "obj" or croak join(": ", $self->file || (), "Byte offset $offset: Invalid indirect object definition!\n");
+        $stream->{type} eq "dict" or croak join(": ", $self->file || (), "Byte offset ${$offset}: Stream dictionary missing!\n");
+        $id->{type} eq "obj" or croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid indirect object definition!\n");
         $_ = $_->{data} for $id, $stream;
         defined(my $length = $stream->{Length})
-          or warn join(": ", $self->file || (), "Byte offset $offset: Object #$id: Stream length not found in metadata!\n");
+          or warn join(": ", $self->file || (), "Byte offset ${$offset}: Object #$id: Stream length not found in metadata!\n");
         /\G\r?\n/gc;
 
         # Check for unsupported stream types.
         my $type = $stream->{Type} // "";
         if ($type eq "/ObjStm") {
-          croak join(": ", $self->file || (), "Byte offset $offset: PDF 1.5 object streams are not supported!\n");
+          croak join(": ", $self->file || (), "Byte offset ${$offset}: PDF 1.5 object streams are not supported!\n");
         } elsif ($type eq "/XRef") {
-          croak join(": ", $self->file || (), "Byte offset $offset: PDF 1.5 cross-reference streams are not supported!\n");
+          croak join(": ", $self->file || (), "Byte offset ${$offset}: PDF 1.5 cross-reference streams are not supported!\n");
         }
 
         # Save the starting offset for the stream.
@@ -1010,7 +1022,7 @@ sub parse_objects {
           if (/\G((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s/gc) {
             $length = $+[1] - $-[1];
           } else {
-            croak join(": ", $self->file || (), "Byte offset $offset: Invalid stream definition!\n");
+            croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid stream definition!\n");
           }
         }
 
@@ -1024,14 +1036,14 @@ sub parse_objects {
         $self->filter_stream($stream) if $stream->{Filter};
       } elsif ($token eq "endobj") {                                            # Indirect object definition: 999 0 obj ... endobj
         my ($id, $object) = splice @objects, -2;
-        $id->{type} eq "obj" or croak join(": ", $self->file || (), "Byte offset $offset: Invalid indirect object definition!\n");
+        $id->{type} eq "obj" or croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid indirect object definition!\n");
         $object->{id} = $id->{data};
         $indirect_objects->{$id->{data}} = $object;
-        $indirect_objects->{offset}{$object->{offset} // $offset} = $object;
+        $indirect_objects->{offset}{$object->{offset} // ${$offset}} = $object;
         push @objects, $object;
       } elsif ($token eq "xref") {                                              # Cross-reference table
         /\G$ws\d+$ws\d+$n(?>\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))+/gc
-          or croak join(": ", $self->file || (), "Byte offset $offset: Invalid cross-reference table!\n");
+          or croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid cross-reference table!\n");
       } elsif ($token =~ /^[+-]?\d+$/) {                                        # Integer: [+-]999
         push @objects, {
           data => $token,
@@ -1056,11 +1068,11 @@ sub parse_objects {
       }
     } else {
       /\G([^\r\n]*)/;
-      croak join(": ", $self->file || (), "Byte offset $offset: Parse error on input: \"$1\"\n");
+      croak join(": ", $self->file || (), "Byte offset ${$offset}: Parse error on input: \"$1\"\n");
     }
 
     # Update offset/length of last object.
-    $objects[-1]{offset} //= $offset;
+    $objects[-1]{offset} //= ${$offset};
     $objects[-1]{length} //= $+[0] - $objects[-1]{offset};
   }
 
