@@ -1570,7 +1570,11 @@ sub dump_object {
           my $obj = $object->{$key};
           next unless ref $obj;
           $output .= sprintf "%s%-${key_len}s => ", " " x ($indent + 2), $key;
-          $output .= $self->dump_object($object->{$key}, "$label\{$key\}", $seen, ref $object ? $indent + 2 : 0, $mode) . ",\n";
+          if ($key eq "StructTreeRoot") {
+            $output .= "(Structure Hierarchy),\n";
+          } else {
+            $output .= $self->dump_object($object->{$key}, "$label\{$key\}", $seen, ref $object ? $indent + 2 : 0, $mode) . ",\n";
+          }
         }
         if ($output) {
           $output = join("", "{ # $label\n", $output, (" " x $indent), "}");
