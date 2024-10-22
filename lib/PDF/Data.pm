@@ -1602,7 +1602,7 @@ sub dump_object {
       # Hash object.
       $seen->{$object} = $label;
       if (is_stream $object and not $object->{Root}) {
-        $output = "(STREAM)";
+        $output = "(Stream)";
       } else {
         $label =~ s/(?<=\w)$/->/;
         my @keys = sort { ($priority{$a} // 0) <=> ($priority{$b} // 0) || fc($a) cmp fc($b) || $a cmp $b; } keys %{$object};
@@ -1611,7 +1611,15 @@ sub dump_object {
           my $obj = $object->{$key};
           next unless ref $obj;
           $output .= sprintf "%s%-${key_len}s => ", " " x ($indent + 2), $key;
-          if ($key eq "StructTreeRoot") {
+          if ($key eq "Annots") {
+            $output .= "(Annotations),\n";
+          } elsif ($key eq "IDTree") {
+            $output .= "(ID Name Tree),\n";
+          } elsif ($key eq "Names") {
+            $output .= "(Name Tree),\n";
+          } elsif ($key eq "Outlines") {
+            $output .= "(Document Outline),\n";
+          } elsif ($key eq "StructTreeRoot") {
             $output .= "(Structure Hierarchy),\n";
           } else {
             $output .= $self->dump_object($object->{$key}, "$label\{$key\}", $seen, ref $object ? $indent + 2 : 0, $mode) . ",\n";
@@ -1626,7 +1634,7 @@ sub dump_object {
       }
     } elsif (is_array $object and not grep { ref $_; } @{$object}) {
       # Array of simple objects.
-      $output = "[...]";
+      $output = @{$object} > 4 || grep(!/^\d+(?:\.\d+)?$/, @{$object}) ? "[...]" : sprintf "[%s]", join(", ", @{$object});
     } elsif (is_array $object) {
       # Array object.
       for (my $i = 0; $i < @{$object}; $i++) {
@@ -1671,7 +1679,7 @@ sub dump_object {
     $output =~ s/\{ \# \$pdf\n/\{\n/;
   } elsif (is_array $object and not grep { ref $_; } @{$object}) {
     # Array of simple objects.
-    $output = sprintf "[%s]", join(", ", map { /^\d+\.\d+$/ ? $_ : dump($_); } @{$object});
+    $output = sprintf "[%s]", join(", ", map { /^\d+(?:\.\d+)?$/ ? $_ : dump($_); } @{$object});
   } elsif (is_array $object) {
     # Array object.
     $output .= "[ # $label\n";
