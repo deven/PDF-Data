@@ -201,51 +201,57 @@ sub parse_pdf {
   # Parsed indirect objects.
   $self->{-indirect_objects} = {};
 
+  # Trailer dictionaries and cross-reference streams.
+  $self->{-trailers} = [];
+
   # Parse PDF objects.
   my @objects = $self->parse_objects(\$data, \$offset);
 
   # Check for startxref value.
   my $startxref;
-  if (($objects[-2]{type} // "") eq "token" and $objects[-2]{data} eq "startxref" and $objects[-1]{type} eq "int") {
+  if (@objects and $objects[-1]{type} eq "startxref") {
     $startxref = pop(@objects)->{data};
     pop @objects;
   }
 
-  # PDF trailer dictionary.
-  my $trailer;
-
-  # Find trailer dictionary.
-  for (my $i = $#objects; $i >= 0; $i--) {
-    if ($objects[$i]{data} eq "trailer") {
-      $i < $#objects and $objects[$i + 1]{type} eq "dict"
-        or croak join(": ", $self->file || (), "Byte offset $objects[$i]{offset}: Invalid trailer dictionary!\n");
-      $trailer = $objects[$i + 1]{data};
-      last;
-    }
+  # Warn if startxref value is missing.
+  unless ($startxref) {
+    carp join(": ", $self->file || (), "Required \"startxref\" value missing!\n");
+    $startxref = length $data;
   }
 
-  # The trailer dictionary can be merged into a cross-reference stream dictionary.
-  unless ($trailer) {
-    my $xref = $self->{-indirect_objects}{offset}{$startxref};
-    $trailer = $xref->{data} if $xref and $xref->{type} eq "stream" and ($xref->{data}{Type} // "") eq "/XRef";
+  # Trailer dictionaries to process.
+  my @trailers;
+
+  # Determine list of trailer dictionaries to process, in priority order.
+  while ($startxref) {
+    # Find trailer dictionary or cross-reference stream nearest to the startxref offset.
+    my $trailer = (sort { $a->[0] <=> $b->[0] } map [abs($_->{offset} - $startxref), $_], @{$self->{-trailers}})[0][1]{data};
+
+    # Add the selected trailer dictionary to the list.
+    push @trailers, $trailer;
+
+    # Continue with previous trailer, if any.
+    $startxref = $trailer->{Prev} // "";
   }
 
   # Make sure trailer dictionary was found.
-  croak join(": ", $self->file || (), "PDF trailer dictionary not found!\n") unless defined $trailer;
+  croak join(": ", $self->file || (), "PDF trailer dictionary not found!\n") unless @trailers;
 
-  # Resolve indirect object references.
-  $self->resolve_references($trailer);
-
-  # Create a new instance from the parsed data.
-  my $pdf = bless $trailer, $class;
-
-  # Add any provided arguments.
-  foreach my $key (sort keys %args) {
-    $pdf->{$key} = $args{$key};
+  # Loop across trailer dictionaries.
+  foreach my $trailer (@trailers) {
+    # Copy trailer dictionary entries.
+    foreach my $key (keys %{$trailer}) {
+      # Copy new keys, but skip keys specific to cross-reference streams.
+      $self->{$key} //= $trailer->{$key} unless $key =~ /^(?:Length|Filter|DecodeParms|F|FFilter|FDecodeParms|DL|Index|Prev|W)$/;
+    }
   }
 
+  # Resolve indirect object references.
+  $self->resolve_references($self);
+
   # Validate the PDF structure if the -validate flag is set, and return the new instance.
-  return $pdf->{-validate} ? $pdf->validate : $pdf;
+  return $self->{-validate} ? $self->validate : $self;
 }
 
 # Generate and write a new PDF file.
@@ -948,12 +954,20 @@ sub parse_objects {
       @pairs % 2 == 0
         or croak join(": ", $self->file || (), "Byte offset $dict_offset: Parse error: Missing value before \">>\" token!\n");
 
-      push @objects, {
+      my $object = {
         data   => { @pairs },
         type   => "dict",
         offset => $dict_offset,
         length => pos() - $dict_offset,
       };
+
+      if (@objects and $objects[-1]{type} eq "token" and $objects[-1]{data} eq "trailer") {
+        $object->{type} = "trailer";
+        pop @objects;
+        push @{$self->{-trailers}}, $object;
+      }
+
+      push @objects, $object;
     } elsif (/\G\[/gc) {                                                        # Array: [...]
       my $array_offset = ${$offset};
 
@@ -1025,6 +1039,10 @@ sub parse_objects {
         $stream->{type} eq "dict" or croak join(": ", $self->file || (), "Byte offset ${$offset}: Stream dictionary missing!\n");
         $stream->{type} = "stream";
         $id->{type} eq "obj" or croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid indirect object definition!\n");
+
+        # Save cross-reference streams with trailer dictionaries.
+        push @{$self->{-trailers}}, $stream if ($stream->{data}{Type} // "") eq "/XRef";
+
         $_ = $_->{data} for $id, $stream;
         defined(my $length = $stream->{Length})
           or carp join(": ", $self->file || (), "Byte offset ${$offset}: Stream #$id: Stream length not found in metadata!\n");
@@ -1086,10 +1104,17 @@ sub parse_objects {
           }
         }
       } elsif ($token =~ /^[+-]?\d+$/) {                                        # Integer: [+-]999
-        push @objects, {
+        my $object = {
           data => $token,
           type => "int",
         };
+
+        if (@objects and $objects[-1]{type} eq "token" and $objects[-1]{data} eq "startxref") {
+          $object->{type} = "startxref";
+          pop @objects;
+        }
+
+        push @objects, $object;
       } elsif ($token =~ /^[+-]?(?:\d+\.\d*|\.\d+)$/) {                         # Real number: [+-]999.999
         push @objects, {
           data => $token,
