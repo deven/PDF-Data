@@ -265,11 +265,13 @@ sub parse_pdf {
 
   # Process all streams.
   foreach my $stream (@{$self->{-streams}}) {
-    substr($stream->{-data}, $stream->{Length}) =~ s/\A$s+\z// if $stream->{Length} and length($stream->{-data}) > $stream->{Length};
-    my $len = length $stream->{-data};
-    $stream->{Length} ||= $len;
-    $len == $stream->{Length}
-      or warn join(": ", $self->file || (), "Warning: Object #$stream->{-id}: Stream length does not match metadata! ($len != $stream->{Length})\n");
+    if (length($stream->{-data}) == $stream->{-length}) {
+      substr($stream->{-data}, $stream->{Length}) =~ s/\A$s+\z// if $stream->{Length} and length($stream->{-data}) > $stream->{Length};
+      my $len = length $stream->{-data};
+      $stream->{Length} ||= $len;
+      $len == $stream->{Length}
+        or warn join(": ", $self->file || (), "Warning: Object #$stream->{-id}: Stream length does not match metadata! ($len != $stream->{Length})\n");
+    }
 
     # Extend object collections.
     if (my $extends = $stream->{Extends}) {
@@ -1128,10 +1130,11 @@ sub parse_objects {
           }
         }
 
-        $stream->{-data}   = substr($_, $pos, $length) // "";
-        $stream->{-id}     = $id;
-        $stream->{-offset} = ${$offset};
-        $stream->{Length}  = $length;
+        $stream->{-data}    = substr($_, $pos, $length) // "";
+        $stream->{-id}      = $id;
+        $stream->{-offset}  = ${$offset};
+        $stream->{-length}  = $length;
+        $stream->{Length} //= $length;
 
         push @{$self->{-streams}}, $stream;
 
