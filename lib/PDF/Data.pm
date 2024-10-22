@@ -201,8 +201,14 @@ sub parse_pdf {
   # Parsed indirect objects.
   $self->{-indirect_objects} = {};
 
+  # Unresolved references to indirect objects.
+  $self->{-unresolved_refs} = {};
+
   # Trailer dictionaries and cross-reference streams.
   $self->{-trailers} = [];
+
+  # All stream objects.
+  $self->{-streams} = [];
 
   # Parse PDF objects.
   my @objects = $self->parse_objects(\$data, \$offset);
@@ -224,9 +230,10 @@ sub parse_pdf {
   my @trailers;
 
   # Determine list of trailer dictionaries to process, in priority order.
+  my $trailers = delete $self->{-trailers};
   while ($startxref) {
     # Find trailer dictionary or cross-reference stream nearest to the startxref offset.
-    my $trailer = (sort { $a->[0] <=> $b->[0] } map [abs($_->{offset} - $startxref), $_], @{$self->{-trailers}})[0][1]{data};
+    my $trailer = (sort { $a->[0] <=> $b->[0] } map [abs($_->{offset} - $startxref), $_], @{$trailers})[0][1]{data};
 
     # Add the selected trailer dictionary to the list.
     push @trailers, $trailer;
@@ -247,8 +254,40 @@ sub parse_pdf {
     }
   }
 
-  # Resolve indirect object references.
-  $self->resolve_references($self);
+  # Check for unresolved references.
+  my $unresolved_refs = delete $self->{-unresolved_refs};
+  my @ids = sort { $a <=> $b } keys %{$unresolved_refs};
+  foreach my $id (@ids) {
+    ($id, my $gen) = split /-/, $id;
+    $gen ||= "0";
+    warn join(": ", $self->file || (), "Warning: $id $gen R: Referenced indirect object not found!\n");
+  }
+
+  # Process all streams.
+  foreach my $stream (@{$self->{-streams}}) {
+    substr($stream->{-data}, $stream->{Length}) =~ s/\A$s+\z// if $stream->{Length} and length($stream->{-data}) > $stream->{Length};
+    my $len = length $stream->{-data};
+    $stream->{Length} ||= $len;
+    $len == $stream->{Length}
+      or warn join(": ", $self->file || (), "Warning: Object #$stream->{-id}: Stream length does not match metadata! ($len != $stream->{Length})\n");
+
+    # Extend object collections.
+    if (my $extends = $stream->{Extends}) {
+      if (ref $extends and reftype($extends) eq "SCALAR") {
+        my $id   = ${$extends};
+        $extends = $self->{-indirect_objects}{$extends}
+          or croak join(": ", $self->file || (), "Byte offset $stream->{-offset}: Stream #$stream->{-id}: Extends argument in object stream metadata refers to non-existent indirect object #$id!\n");
+      }
+      push @{$extends->{-objects}}, @{delete $stream->{-objects}};
+      $stream->{Extends} = $extends;
+    }
+  }
+
+  # Discard parsing metadata.
+  delete $self->{-indirect_objects};
+  delete $self->{-unresolved_refs};
+  delete $self->{-trailers};
+  delete $self->{-streams};
 
   # Validate the PDF structure if the -validate flag is set, and return the new instance.
   return $self->{-validate} ? $self->validate : $self;
@@ -946,16 +985,19 @@ sub parse_objects {
       $token->{data} eq ">>"
         or croak join(": ", $self->file || (), "Byte offset $dict_offset: Parse error: \">>\" token found without matching \"<<\" token!\n");
 
-      for (my $i = 0; $i < @pairs; $i++) {
-        $pairs[$i] = $i % 2 ? $pairs[$i]{data} : ($pairs[$i]{name}
-          // croak join(": ", $self->file || (), "Byte offset $pairs[$i]{offset}: Dictionary key \"$pairs[$i]{data}\" is not a name!\n"));
+      my %dict;
+      for (my $i = 0; $i < @pairs; $i += 2) {
+        my ($key, $value) = ($pairs[$i]{name}, $pairs[$i + 1]{data});
+        $key   // croak join(": ", $self->file || (), "Byte offset $pairs[$i]{offset}: Dictionary key \"$pairs[$i]{data}\" is not a name!\n");
+        $value // croak join(": ", $self->file || (), "Byte offset $dict_offset: Parse error: Missing value before \">>\" token!\n");
+
+        $dict{$key} = $value;
+
+        push @{$self->{-unresolved_refs}{${$value}}}, \$dict{$key} if ref $value and reftype($value) eq "SCALAR";
       }
 
-      @pairs % 2 == 0
-        or croak join(": ", $self->file || (), "Byte offset $dict_offset: Parse error: Missing value before \">>\" token!\n");
-
       my $object = {
-        data   => { @pairs },
+        data   => \%dict,
         type   => "dict",
         offset => $dict_offset,
         length => pos() - $dict_offset,
@@ -980,8 +1022,14 @@ sub parse_objects {
       $token->{data} eq "]"
         or croak join(": ", $self->file || (), "Byte offset $array_offset: Parse error: \"]\" token found without matching \"[\" token!\n");
 
+      my @array = map $_->{data}, @array_objects;
+
+      for (my $i = 0; $i < @array; $i++) {
+        push @{$self->{-unresolved_refs}{${$array[$i]}}}, \$array[$i] if ref $array[$i] and reftype($array[$i]) eq "SCALAR";
+      }
+
       push @objects, {
-        data   => [ map $_->{data}, @array_objects ],
+        data   => \@array,
         type   => "array",
         offset => $array_offset,
         length => pos() - $array_offset,
@@ -1019,11 +1067,23 @@ sub parse_objects {
         "$id->{type} $gen->{type}" eq "int int"
           or croak join(": ", $self->file || (), "Byte offset ${$offset}: $id->{data} $gen->{data} $token: Invalid indirect object $type!\n");
         my $new_id = join("-", $id->{data}, $gen->{data} || ());
-        push @objects, {
-          data   => ($token eq "R" ? \$new_id : $new_id),
+
+        my $object = {
+          data   => $new_id,
           type   => $token,
           offset => $id->{offset},
         };
+
+        if ($token eq "R") {
+          if ($self->{-indirect_objects}{$new_id}) {
+            $object->{data} = $self->{-indirect_objects}{$new_id}{data};
+          } else {
+            $object->{data} = \$new_id;
+            push @{$self->{-unresolved_refs}{$new_id}}, \$object->{data};
+          }
+        }
+
+        push @objects, $object;
       } elsif ($token eq "ID") {                                                # Inline image data: ID ... EI
         /\G$s(.*?)(?:\r\n|$s)?EI$s/sgc or croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid inline image data!\n");
         my $image = $1;
@@ -1068,10 +1128,12 @@ sub parse_objects {
           }
         }
 
-        $stream->{-data}   = substr($_, $pos, $length);
+        $stream->{-data}   = substr($_, $pos, $length) // "";
         $stream->{-id}     = $id;
         $stream->{-offset} = ${$offset};
         $stream->{Length}  = $length;
+
+        push @{$self->{-streams}}, $stream;
 
         ${$offset} = pos = $pos + $length;
         /\G$s*endstream$ws/gc
@@ -1088,6 +1150,12 @@ sub parse_objects {
         $self->{-indirect_objects}{$id->{data}}           = $object;
         $self->{-indirect_objects}{offset}{$id->{offset}} = $object;
         push @objects, $object;
+
+        if (my $refs = delete $self->{-unresolved_refs}{$id->{data}}) {
+          foreach my $ref (@{$refs}) {
+            ${$ref} = $object->{data};
+          }
+        }
       } elsif ($token eq "xref") {                                              # Cross-reference table
         # Parse one or more cross-reference subsections.
         while (/\G$ws(\d+)$ws(\d+)$n/gc) {
@@ -1178,7 +1246,7 @@ sub parse_object_stream {
   $first =~ /^\d+$/
     or croak join(": ", $self->file || (), "Byte offset $stream->{-offset}: Stream #$stream->{-id}: First object offset \"$first\" in object stream metadata is not an integer!\n");
   my $extends = $stream->{Extends};
-  not defined $extends or (ref $extends and reftype($extends) eq "SCALAR")
+  not defined $extends or (ref $extends and reftype($extends) eq "SCALAR") or is_stream($extends)
     or croak join(": ", $self->file || (), "Byte offset $stream->{-offset}: Stream #$stream->{-id}: Extends argument in object stream metadata is invalid!\n");
 
   pos = 0;
@@ -1208,6 +1276,12 @@ sub parse_object_stream {
 
     $object->{id} = $id;
     $self->{-indirect_objects}{$id} = $object;
+
+    if (my $refs = delete $self->{-unresolved_refs}{$id}) {
+      foreach my $ref (@{$refs}) {
+        ${$ref} = $object->{data};
+      }
+    }
 
     push @{$stream->{-objects}}, $object;
   }
@@ -1266,67 +1340,6 @@ sub compress_stream {
   $new_stream->{Length} = length $new_stream->{-data};
   $new_stream->{Filter} = @filters ? ["/FlateDecode", @filters] : "/FlateDecode";
   return $new_stream;
-}
-
-# Resolve indirect object references.
-sub resolve_references {
-  my ($self, $object) = @_;
-
-  # Replace indirect object references with a reference to the actual object.
-  if (ref $object and reftype($object) eq "SCALAR") {
-    my $id = ${$object};
-    if ($self->{-indirect_objects}{$id}) {
-      my $resolved = $self->{-indirect_objects}{$id}{resolved}++;
-      $object      = $self->{-indirect_objects}{$id}{data};
-      return $object if $resolved;
-    } else {
-      ($id, my $gen) = split /-/, $id;
-      $gen ||= "0";
-      warn join(": ", $self->file || (), "Warning: $id $gen R: Referenced indirect object not found!\n");
-    }
-  }
-
-  # Check object type.
-  if (is_hash $object) {
-    # Resolve references in hash values.
-    foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
-      $object->{$key} = $self->resolve_references($object->{$key}) if ref $object->{$key};
-    }
-
-    # For streams, validate the length metadata.
-    if (is_stream $object) {
-      $object->{-data} //= "";
-      substr($object->{-data}, $object->{Length}) =~ s/\A$s+\z// if $object->{Length} and length($object->{-data}) > $object->{Length};
-      my $len = length $object->{-data};
-      $object->{Length} ||= $len;
-      $len == $object->{Length}
-        or warn join(": ", $self->file || (), "Warning: Object #$object->{-id}: Stream length does not match metadata! ($len != $object->{Length})\n");
-
-      # Resolve references in object streams.
-      if (my $objects = $object->{-objects}) {
-        foreach my $i (0 .. $#{$objects}) {
-          $objects->[$i] = $self->resolve_references($objects->[$i]) if ref $objects->[$i];
-        }
-
-        # Extend object collections.
-        if (my $extends = $object->{Extends}) {
-          my $id   = ${$extends};
-          $extends = $self->{-indirect_objects}{$extends}
-            or croak join(": ", $self->file || (), "Byte offset $object->{-offset}: Stream #$object->{-id}: Extends argument in object stream metadata refers to non-existent indirect object #$id!\n");
-          push @{$extends->{-objects}}, @{delete $object->{-objects}};
-          $object->{Extends} = $extends;
-        }
-      }
-    }
-  } elsif (is_array $object) {
-    # Resolve references in array values.
-    foreach my $i (0 .. $#{$object}) {
-      $object->[$i] = $self->resolve_references($object->[$i]) if ref $object->[$i];
-    }
-  }
-
-  # Return object with resolved references.
-  return $object;
 }
 
 # Write all indirect objects to PDF file data.
@@ -2193,13 +2206,6 @@ controlled by the C<$pdf-E<gt>{-compress}> flag, which is set automatically when
 reading a PDF file with compressed streams, but must be set manually for PDF
 files created from scratch, either in the constructor arguments or after the
 fact.
-
-=head2 resolve_references
-
-  $object = $pdf->resolve_references($object);
-
-Used by C<$pdf-E<gt>parse_pdf()> to replace parsed indirect object references
-with direct references to the objects in question.
 
 =head2 write_indirect_objects
 
