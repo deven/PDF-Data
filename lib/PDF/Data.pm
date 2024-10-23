@@ -348,10 +348,18 @@ sub pdf_file_data {
   # Objects seen while generating the PDF file data.
   my $seen = {};
 
+  # Use PDF version 1.4 by default.
+  $self->{-pdf_version} ||= 1.4;
+
+  # Determine whether or not to use object streams.
+  delete $self->{-use_object_streams} if $self->{-no_object_streams};
+  $self->{-use_object_streams} ||= ($self->{-pdf_version} >= 1.5);
+
+  # PDF version 1.5 is required to use object streams.
+  $self->{-pdf_version} = 1.5 if $self->{-use_object_streams} and $self->{-pdf_version} < 1.5;
+
   # Start with PDF header.
-  my $pdf_version      = $self->{-pdf_version} ||= 1.4;
-  my $binary_signature = $self->binary_signature;
-  my $pdf_file_data    = sprintf "%%PDF-%3.1f\n%%%s\n\n", $pdf_version, $binary_signature;
+  my $pdf_file_data = sprintf "%%PDF-%3.1f\n%%%s\n\n", $self->{-pdf_version}, $self->binary_signature;
 
   # Write all indirect objects.
   my $xrefs = $self->write_indirect_objects(\$pdf_file_data, $seen);
@@ -1352,11 +1360,17 @@ sub write_indirect_objects {
   # Enumerate all indirect objects.
   $self->enumerate_indirect_objects;
 
+  # Create object streams, if enabled.
+  $self->create_object_streams if $self->{-use_object_streams};
+
   # Cross-reference file offsets.
   my $xrefs = ["0000000000 65535 f \n"];
 
   # Loop across indirect objects.
   for (my $i = 1; $i <= $#{$self->{-indirect_objects}}; $i++) {
+    # Get the indirect object.
+    my $object = $self->{-indirect_objects}[$i];
+
     # Save file offset for cross-reference table.
     push @{$xrefs}, sprintf "%010d 00000 n \n", length(${$pdf_file_data});
 
@@ -1364,7 +1378,7 @@ sub write_indirect_objects {
     ${$pdf_file_data} .= "$i 0 obj\n";
 
     # Write the object itself.
-    $self->write_object($pdf_file_data, $seen, $self->{-indirect_objects}[$i], 0);
+    $self->write_object($pdf_file_data, $seen, $object, 0) unless $seen->{$object};
 
     # Write the indirect object trailer.
     ${$pdf_file_data} =~ s/\n?\z/\n/;
@@ -1373,6 +1387,91 @@ sub write_indirect_objects {
 
   # Return cross-reference file offsets.
   return $xrefs;
+}
+
+# Create object streams.
+sub create_object_streams {
+  my ($self, $seen) = @_;
+
+  # Always use minify mode to serialize object streams.
+  local $self->{-minify} = 1;
+
+  # Cross-reference stream data.
+  my $xrefs = [];
+
+  # Object stream data.
+  my $pairs   = "";
+  my $objects = "";
+  my $count   = 0;
+  my $extends;
+
+  # Loop across indirect objects.
+  for (my $i = 1; $i <= $#{$self->{-indirect_objects}}; $i++) {
+    # Get the indirect object.
+    my $object = $self->{-indirect_objects}[$i];
+
+    # Skip stream objects and the encryption dictionary (if any).
+    next if is_stream($object) or $object eq ($self->{Encrypt} // "");
+
+    # Determine object offset from first object.
+    my $offset = length $objects;
+
+    # Object stream pair of integers for this object.
+    my $pair = "$i $offset";
+
+    # Save file offset for cross-reference table.
+    push @{$xrefs}, [@{$self->{-indirect_objects}}, $i, $offset];
+
+    # Serialize the object.
+    $self->write_object($objects, $seen, $object, 0);
+
+    # Check if including this object would cause the uncompressed object stream to exceed 64 KB.
+    if ($count > 0 && length($pairs) + length($pair) + length($objects) > 65534) {
+      # Finish the current object stream.
+      $extends ||= $self->add_object_stream($pairs, substr($objects, 0, $offset), $count, $extends);
+
+      # Start a new object stream.
+      $pairs   = $pair;
+      $objects = substr($objects, $offset + (substr($objects, $offset, 1) eq " " ? 1 : 0));
+      $count   = 0;
+    } else {
+      # Add the indirect object to the current object stream.
+      $pairs .= " " if $pairs;
+      $pairs .= $pair;
+      $count++;
+    }
+  }
+
+  # Add the final object stream, if any.
+  $self->add_object_stream($pairs, $objects, $count, $extends) if $count > 0;
+
+  # Return cross-reference stream data.
+  return $xrefs;
+}
+
+# Add a new object stream.
+sub add_object_stream {
+  my ($self, $pairs, $objects, $count, $extends) = @_;
+
+  # Object stream data.
+  my $id     = @{$self->{-indirect_objects}};
+  my $data   = "$pairs $objects";
+  my $length = length $data;
+
+  # Add the new object stream.
+  push @{$self->{-indirect_objects}}, {
+    -id     => $id,
+    -data   => $data,
+    -length => $length,
+    Length  => $length,
+    Type    => "/ObjStm",
+    N       => $count,
+    First   => length($pairs) + 1,
+    ($extends ? (Extends => $extends) : ()),
+  };
+
+  # Return the indirect object ID number of the new object stream.
+  return $id;
 }
 
 # Enumerate all indirect objects.
