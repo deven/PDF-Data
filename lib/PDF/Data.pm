@@ -352,11 +352,10 @@ sub pdf_file_data {
   $self->{-pdf_version} ||= 1.4;
 
   # Determine whether or not to use object streams.
-  delete $self->{-use_object_streams} if $self->{-no_object_streams};
   $self->{-use_object_streams} ||= ($self->{-pdf_version} >= 1.5);
 
   # PDF version 1.5 is required to use object streams.
-  $self->{-pdf_version} = 1.5 if $self->{-use_object_streams} and $self->{-pdf_version} < 1.5;
+  $self->{-pdf_version} = 1.5 if $self->should_use_object_streams && $self->{-pdf_version} < 1.5;
 
   # Start with PDF header.
   my $pdf_file_data = sprintf "%%PDF-%3.1f\n%%%s\n\n", $self->{-pdf_version}, $self->binary_signature;
@@ -790,7 +789,11 @@ sub validate_content_stream {
   croak join(": ", $self->file || (), "Error: $path: $@") if $@;
 
   # Minify content stream if requested.
-  $self->minify_content_stream($stream, \@objects) if $self->{-minify};
+  if ($self->should_minify($stream)) {
+    # Enable top-level minify flag for stream-level minify flag.
+    local $self->{-minify} = 1;
+    $self->minify_content_stream($stream, \@objects);
+  }
 }
 
 # Minify content stream.
@@ -1361,7 +1364,7 @@ sub write_indirect_objects {
   $self->enumerate_indirect_objects;
 
   # Create object streams, if enabled.
-  $self->create_object_streams if $self->{-use_object_streams};
+  $self->create_object_streams if $self->should_use_object_streams;
 
   # Cross-reference file offsets.
   my $xrefs = ["0000000000 65535 f \n"];
@@ -1590,6 +1593,33 @@ sub add_indirect_objects {
   }
 }
 
+# Check if compression should be used.
+sub should_compress {
+  my ($self, $stream) = @_;
+
+  $stream ||= {};
+  ($self->{-compress} || $stream->{-compress} || $self->{-optimize} || $stream->{-optimize})
+    && !($self->{-decompress} || $stream->{-decompress} || $self->{-no_compress} || $stream->{-no_compress} || $self->{-no_optimize} || $stream->{-no_optimize})
+}
+
+# Check if minification should be used.
+sub should_minify {
+  my ($self, $stream) = @_;
+
+  $stream ||= {};
+  ($self->{-minify} || $stream->{-minify} || $self->{-optimize} || $stream->{-optimize})
+    && !($self->{-no_minify} || $stream->{-no_minify} || $self->{-no_optimize} || $stream->{-no_optimize})
+}
+
+# Check if object streams should be used.
+sub should_use_object_streams {
+  my ($self, $stream) = @_;
+
+  $stream ||= {};
+  ($self->{-use_object_streams} || $stream->{-use_object_streams} || $self->{-optimize} || $stream->{-optimize})
+    && !($self->{-no_use_object_streams} || $stream->{-no_use_object_streams} || $self->{-no_optimize} || $stream->{-no_optimize})
+}
+
 # Write a direct object to the string of PDF file data.
 sub write_object {
   my ($self, $pdf_file_data, $seen, $object, $indent) = @_;
@@ -1604,7 +1634,7 @@ sub write_object {
     # For streams, compress the stream or update the length metadata.
     if (is_stream $object) {
       $object->{-data} //= "";
-      if (($self->{-compress} or $object->{-compress}) and not ($self->{-decompress} or $object->{-decompress})) {
+      if ($self->should_compress($object)) {
         $object = $self->compress_stream($object);
       } else {
         $object->{Length} = length $object->{-data};
