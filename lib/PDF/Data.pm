@@ -361,23 +361,7 @@ sub pdf_file_data {
   my $pdf_file_data = sprintf "%%PDF-%3.1f\n%%%s\n\n", $self->{-pdf_version}, $self->binary_signature;
 
   # Write all indirect objects.
-  my $xrefs = $self->write_indirect_objects(\$pdf_file_data, $seen);
-
-  # Add cross-reference table.
-  my $startxref   = length($pdf_file_data);
-  $pdf_file_data .= sprintf "xref\n0 %d\n", scalar @{$xrefs};
-  $pdf_file_data .= join("", @{$xrefs});
-
-  # Save correct size in trailer dictionary.
-  $self->{Size} = scalar @{$xrefs};
-
-  # Write trailer dictionary.
-  $pdf_file_data .= "trailer ";
-  $self->write_object(\$pdf_file_data, $seen, $self, 0);
-
-  # Write startxref value.
-  $pdf_file_data =~ s/\n?\z/\n/;
-  $pdf_file_data .= "startxref\n$startxref\n";
+  $self->write_indirect_objects(\$pdf_file_data, $seen);
 
   # End of PDF file data.
   $pdf_file_data .= "%%EOF\n";
@@ -1356,40 +1340,131 @@ sub compress_stream {
   return $new_stream;
 }
 
+# Write a single indirect object to PDF file data.
+sub write_indirect_object {
+  my ($self, $pdf_file_data, $seen, $id, $object) = @_;
+
+  # Write the indirect object header.
+  ${$pdf_file_data} .= "$id 0 obj\n";
+
+  # Save startxref value.
+  my $startxref = length(${$pdf_file_data});
+
+  # Write the object itself.
+  $self->write_object($pdf_file_data, $seen, $object, 0);
+
+  # Write the indirect object trailer.
+  ${$pdf_file_data} =~ s/\n?\z/\n/;
+  ${$pdf_file_data} .= "endobj\n\n";
+
+  # Return startxref value to use for cross-reference stream.
+  return $startxref;
+}
+
 # Write all indirect objects to PDF file data.
 sub write_indirect_objects {
   my ($self, $pdf_file_data, $seen) = @_;
 
+  # Cache result of helper function.
+  my $use_object_streams = $self->should_use_object_streams;
+
   # Enumerate all indirect objects.
   $self->enumerate_indirect_objects;
 
-  # Create object streams, if enabled.
-  $self->create_object_streams if $self->should_use_object_streams;
+  # Cross-reference table data; start with free entry for object number 0.
+  my $xrefs = "0000000000 65535 f \n";
 
-  # Cross-reference file offsets.
-  my $xrefs = ["0000000000 65535 f \n"];
+  # Create object streams, if enabled.
+  $xrefs = $self->create_object_streams($seen) if $use_object_streams;
 
   # Loop across indirect objects.
   for (my $i = 1; $i <= $#{$self->{-indirect_objects}}; $i++) {
     # Get the indirect object.
     my $object = $self->{-indirect_objects}[$i];
 
-    # Save file offset for cross-reference table.
-    push @{$xrefs}, sprintf "%010d 00000 n \n", length(${$pdf_file_data});
+    # Check if using object streams.
+    if ($use_object_streams) {
+      # Check if this indirect object should be saved as a regular uncompressed object.
+      if (substr($xrefs, $i * 7, 1) eq pack('C', 1)) {
+        # Update cross-reference stream data for this uncompressed object.
+        substr($xrefs, $i * 7 + 1, 4) = pack('N', length(${$pdf_file_data}));
+      } else {
+        # Skip indirect objects already saved in object streams as compressed objects.
+        next;
+      }
+    } else {
+      # Add file offset to cross-reference table.
+      $xrefs .= sprintf "%010d 00000 n \n", length(${$pdf_file_data});
+    }
 
-    # Write the indirect object header.
-    ${$pdf_file_data} .= "$i 0 obj\n";
+    # Write the indirect object itself.
+    $self->write_indirect_object($pdf_file_data, $seen, $i, $object) unless $seen->{$object};
+  }
 
-    # Write the object itself.
-    $self->write_object($pdf_file_data, $seen, $object, 0) unless $seen->{$object};
-
-    # Write the indirect object trailer.
-    ${$pdf_file_data} =~ s/\n?\z/\n/;
-    ${$pdf_file_data} .= "endobj\n\n";
+  # Check if using object streams.
+  if ($use_object_streams) {
+    # Write cross-reference stream.
+    $self->write_xref_stream($pdf_file_data, $seen, $xrefs);
+  } else {
+    # Write cross-reference table.
+    $self->write_xref_table($pdf_file_data, $seen, $xrefs);
   }
 
   # Return cross-reference file offsets.
   return $xrefs;
+}
+
+# Write cross-reference table.
+sub write_xref_table {
+  my ($self, $pdf_file_data, $seen, $xrefs) = @_;
+
+  # Add cross-reference table.
+  my $size           = @{$self->{-indirect_objects}};
+  my $startxref      = length(${$pdf_file_data});
+  ${$pdf_file_data} .= "xref\n0 $size\n$xrefs";
+
+  # Save correct size in trailer dictionary.
+  $self->{Size} = $size;
+
+  # Write trailer dictionary.
+  ${$pdf_file_data} .= "trailer ";
+  $self->write_object($pdf_file_data, $seen, $self, 0);
+
+  # Write startxref value.
+  ${$pdf_file_data} =~ s/\n?\z/\n/;
+  ${$pdf_file_data} .= "startxref\n$startxref\n";
+}
+
+# Write cross-reference stream.
+sub write_xref_stream {
+  my ($self, $pdf_file_data, $seen, $xrefs) = @_;
+
+  # Cross-reference stream data.
+  my $id        = @{$self->{-indirect_objects}};
+  my $size      = $id + 1;
+  my $data      = $xrefs . pack('CNn', 1, length(${$pdf_file_data}), 0);
+  my $length    = length $data;
+
+  # Cross-reference stream object doubles as trailer dictionary.
+  $self->{-id}       = $id;
+  $self->{-data}     = $data;
+  $self->{-length}   = $length;
+  $self->{-compress} = 1;
+  $self->{Length}    = $length;
+  $self->{Type}      = "/XRef";
+  $self->{Size}      = $size;
+  $self->{Index}     = [0, $size];
+  $self->{W}         = [1, 4, 2];
+
+  # Save the cross-reference stream object.
+  push @{$self->{-indirect_objects}}, $self;
+
+  # Write the cross-reference stream object.
+  my $startxref = $self->write_indirect_object($pdf_file_data, $seen, $id, $self);
+
+  # Write startxref value.
+  ${$pdf_file_data} =~ s/\n?\z/\n/;
+  ${$pdf_file_data} .= "startxref\n$startxref\n";
 }
 
 # Create object streams.
@@ -1399,8 +1474,8 @@ sub create_object_streams {
   # Always use minify mode to serialize object streams.
   local $self->{-minify} = 1;
 
-  # Cross-reference stream data.
-  my $xrefs = [];
+  # Cross-reference stream data; start with free entry for object number 0.
+  my $xrefs = pack('CNn', 0, 0, 65535);
 
   # Object stream data.
   my $pairs   = "";
@@ -1413,8 +1488,14 @@ sub create_object_streams {
     # Get the indirect object.
     my $object = $self->{-indirect_objects}[$i];
 
-    # Skip stream objects and the encryption dictionary (if any).
-    next if is_stream($object) or $object eq ($self->{Encrypt} // "");
+    # Skip stream objects and the encryption dictionary (if any).  For Linearized PDF, also skip document catalog and page objects.
+    if (is_stream($object) || $object eq ($self->{Encrypt} // "") || ($self->{-linearized} && ($object->{Type} // "") =~ m{^/(Catalog|Pages)$})) {
+      # Reserve space for cross-reference stream data for this uncompressed object.
+      $xrefs .= pack('CNn', 1, 0, 0);
+
+      # Continue to the next indirect object.
+      next;
+    }
 
     # Determine object offset from first object.
     my $offset = length $objects;
@@ -1422,22 +1503,25 @@ sub create_object_streams {
     # Object stream pair of integers for this object.
     my $pair = "$i $offset";
 
-    # Save file offset for cross-reference table.
-    push @{$xrefs}, [@{$self->{-indirect_objects}}, $i, $offset];
-
     # Serialize the object.
-    $self->write_object($objects, $seen, $object, 0);
+    $self->write_object(\$objects, $seen, $object, 0);
 
-    # Check if including this object would cause the uncompressed object stream to exceed 64 KB.
-    if ($count > 0 && length($pairs) + length($pair) + length($objects) > 65534) {
+    # Check if including this object would cause the uncompressed object stream to exceed 1 MB or index numbers to exceed 16 bits.
+    if ($count == 65535 || $count > 0 && length($pairs) + length($pair) + length($objects) + 2 > 1048576) {
       # Finish the current object stream.
       $extends ||= $self->add_object_stream($pairs, substr($objects, 0, $offset), $count, $extends);
+
+      # Save cross-reference stream data for this compressed object.
+      $xrefs .= pack('CNn', 2, scalar(@{$self->{-indirect_objects}}), 0);
 
       # Start a new object stream.
       $pairs   = $pair;
       $objects = substr($objects, $offset + (substr($objects, $offset, 1) eq " " ? 1 : 0));
-      $count   = 0;
+      $count   = 1;
     } else {
+      # Save cross-reference stream data for this compressed object.
+      $xrefs .= pack('CNn', 2, scalar(@{$self->{-indirect_objects}}), $count);
+
       # Add the indirect object to the current object stream.
       $pairs .= " " if $pairs;
       $pairs .= $pair;
@@ -1446,7 +1530,13 @@ sub create_object_streams {
   }
 
   # Add the final object stream, if any.
-  $self->add_object_stream($pairs, $objects, $count, $extends) if $count > 0;
+  if ($count > 0) {
+    # Add the object stream.
+    $self->add_object_stream($pairs, $objects, $count, $extends);
+
+    # Reserve space for cross-reference stream data for this uncompressed object.
+    $xrefs .= pack('CNn', 1, 0, 0);
+  }
 
   # Return cross-reference stream data.
   return $xrefs;
@@ -1458,18 +1548,19 @@ sub add_object_stream {
 
   # Object stream data.
   my $id     = @{$self->{-indirect_objects}};
-  my $data   = "$pairs $objects";
+  my $data   = "$pairs\n$objects";
   my $length = length $data;
 
   # Add the new object stream.
   push @{$self->{-indirect_objects}}, {
-    -id     => $id,
-    -data   => $data,
-    -length => $length,
-    Length  => $length,
-    Type    => "/ObjStm",
-    N       => $count,
-    First   => length($pairs) + 1,
+    -id       => $id,
+    -data     => $data,
+    -length   => $length,
+    -compress => 1,
+    Length    => $length,
+    Type      => "/ObjStm",
+    N         => $count,
+    First     => length($pairs) + 1,
     ($extends ? (Extends => $extends) : ()),
   };
 
@@ -1613,11 +1704,9 @@ sub should_minify {
 
 # Check if object streams should be used.
 sub should_use_object_streams {
-  my ($self, $stream) = @_;
+  my ($self) = @_;
 
-  $stream ||= {};
-  ($self->{-use_object_streams} || $stream->{-use_object_streams} || $self->{-optimize} || $stream->{-optimize})
-    && !($self->{-no_use_object_streams} || $stream->{-no_use_object_streams} || $self->{-no_optimize} || $stream->{-no_optimize})
+  ($self->{-use_object_streams} || $self->{-optimize}) && !($self->{-no_use_object_streams} || $self->{-no_optimize})
 }
 
 # Write a direct object to the string of PDF file data.
@@ -1660,7 +1749,6 @@ sub write_object {
 
     # For streams, write the stream data.
     if (is_stream $object) {
-      $object->{-data} //= "";
       croak join(": ", $self->file || (), "Stream written as direct object!\n") if $indent;
       my $newline = substr($object->{-data}, -1) eq "\n" ? "" : "\n";
       ${$pdf_file_data} =~ s/\n?\z/\n/;
@@ -1888,6 +1976,12 @@ The C<$pdf-E<gt>{-minify}> flag controls whether or not to save space in the
 generated PDF file data by removing comments and extra whitespace from content
 streams.  This flag can be used along with C<$pdf-E<gt>{-compress}> to make the
 generated PDF file data even smaller, but this transformation is not reversible.
+
+=head2 file
+
+  my $filename = $pdf->file;
+
+Get PDF filename, if any.  Used by many methods for error reporting.
 
 =head2 clone
 
@@ -2207,9 +2301,9 @@ from the root of the PDF::Data object to the content stream, and the C<$stream>
 parameter specifies the actual content stream represented by that logical path.
 
 This method calls C<$pdf-E<gt>parse_objects()> to make sure that the content
-stream can be parsed.  If the C<$pdf-E<gt>{-minify}> flag is set,
-C<$pdf-E<gt>minify_content_stream()> will be called with the array of parsed
-objects to minify the content stream.
+stream can be parsedi, and C<$pdf-E<gt>should_minify()> to check flags to
+decide whether to call C<$pdf-E<gt>minify_content_stream()> will be called with
+the array of parsed objects to minify the content stream.
 
 =head2 minify_content_stream
 
@@ -2286,7 +2380,7 @@ C<$pdf-E<gt>serialize_object()> for other objects.
 
   $pdf->serialize_object($stream, $object);
 
-Used by C<$pdf-E<gt>generate_content_stream()>,
+Used by C<$pdf-E<gt>write_object()>, C<$pdf-E<gt>generate_content_stream()>,
 C<$pdf-E<gt>serialize_dictionary()> and C<$pdf-E<gt>serialize_array()>
 to serialize a simple object.  The C<$stream> parameter specifies a reference to
 a string containing the data for the new content stream being generated, and the
@@ -2317,7 +2411,10 @@ path.
 
   my @objects = $pdf->parse_objects($data, $offset);
 
-Used by C<$pdf-E<gt>parse_pdf()> to parse PDF objects into Perl representations.
+Used by C<$pdf-E<gt>parse_pdf()>, C<$pdf-E<gt>parse_object_stream()>,
+C<$pdf-E<gt>parse_data()>, C<$pdf-E<gt>validate_content_stream()> and
+C<$pdf-E<gt>minify_content_stream()>, and called by itself recursively, to parse
+PDF objects into Perl representations.
 
 =head2 parse_data
 
@@ -2347,12 +2444,50 @@ reading a PDF file with compressed streams, but must be set manually for PDF
 files created from scratch, either in the constructor arguments or after the
 fact.
 
+=head2 write_indirect_object
+
+  my $startxref = $pdf->write_indirect_object($pdf_file_data, $seen, $id, $object);
+
+Uses C<$pdf-E<gt>write_object> to write a single indirect object to a string of
+new PDF file data; used by C<$pdf-E<gt>write_indirect_objects> and
+C<$pdf-E<gt>write_xref_stream>.
+
 =head2 write_indirect_objects
 
   my $xrefs = $pdf->write_indirect_objects($pdf_file_data, $seen);
 
 Used by C<$pdf-E<gt>write_pdf()> to write all indirect objects to a string of
 new PDF file data.
+
+=head2 write_xref_table
+
+  $pdf->write_xref_table($pdf_file_data, $seen, $xrefs);
+
+Used by C<$pdf-E<gt>write_indirect_objects()> to write a standard
+cross-reference table to a string of new PDF file data.
+
+=head2 write_xref_stream
+
+  $pdf->write_xref_stream($pdf_file_data, $seen, $xrefs);
+
+Uses C<$pdf-E<gt>write_indirect_object()> to write a PDF 1.5 cross-reference
+stream to a string of new PDF file data; used by
+C<$pdf-E<gt>write_indirect_objects()>.
+
+=head2 create_object_streams
+
+  my $xrefs = $pdf->create_object_streams($seen);
+
+Uses C<$pdf-E<gt>write_object()> and C<$pdf-E<gt>add_object_stream()> to create
+PDF 1.5 object streams and write them to a string of new PDF file data; used by
+C<$pdf-E<gt>write_indirect_objects()>.
+
+=head2 add_object_stream
+
+  my $id = $pdf->add_object_stream($pairs, $objects, $count, $extends);
+
+Used by C<$pdf-E<gt>create_object_streams()> to add a new object stream to the
+list of indirect objects to be written out.
 
 =head2 enumerate_indirect_objects
 
@@ -2372,16 +2507,49 @@ already shared (referenced from multiple objects in the PDF data structure).
 
   $pdf->add_indirect_objects(@objects);
 
-Used by C<$pdf-E<gt>enumerate_indirect_objects()> and
-C<$pdf-E<gt>enumerate_shared_objects()> to add objects to the list of indirect
-objects to be written out.
+Used by C<$pdf-E<gt>enumerate_indirect_objects()>,
+C<$pdf-E<gt>enumerate_shared_objects()> and C<$pdf-E<gt>write_object()> to add
+objects to the list of indirect objects to be written out.
+
+=head2 should_compress
+
+  my $should_compress = $pdf->should_compress($stream);
+
+Used by C<$pdf-E<gt>write_object()> to check for C<-compress>, C<-decompress>,
+C<-no_compress>, C<-optimize> and C<-no_optimize> flags on the PDF object and
+the stream itself to decide whether or not compression should be used for that
+stream when writing PDF data.
+
+=head2 should_minify
+
+  my $should_minify = $pdf->should_minify($stream);
+
+Used by C<$pdf-E<gt>validate_content_stream()> to check for C<-minify>,
+C<-no_minify>, C<-optimize> and C<-no_optimize> flags on the PDF object and
+the stream itself to decide whether or not minification should be used for that
+stream when writing PDF data.
+
+=head2 should_use_object_streams
+
+  my $should_use_object_streams = $pdf->should_use_object_streams;
+
+Used by C<$pdf-E<gt>pdf_file_data()> and C<$pdf-E<gt>write_indirect_objects()>
+to check for C<$pdf-E<gt>{-use_object_streams}>,
+C<$pdf-E<gt>{-no_use_object_streams}>, C<$pdf-E<gt>{-optimize}> and
+C<$pdf-E<gt>{-no_optimize}> flags to decide whether or not PDF 1.5 object
+streams should be used when writing PDF data.
 
 =head2 write_object
 
   $pdf->write_object($pdf_file_data, $seen, $object, $indent);
 
-Used by C<$pdf-E<gt>write_indirect_objects()>, and called by itself recursively,
-to write direct objects out to the string of new PDF file data.
+Used by C<$pdf-E<gt>write_indirect_objects()>,
+C<$pdf-E<gt>write_indirect_object()>, C<$pdf-E<gt>write_xref_table()> and
+C<$pdf-E<gt>create_object_streams()>, and called by itself recursively, to write
+direct objects out to the string of new PDF file data; uses
+C<$pdf-E<gt>should_compress()>, C<$pdf-E<gt>compress_stream()>,
+C<$pdf-E<gt>serialize_array()>, C<$pdf-E<gt>serialize_object()> and
+C<$pdf-E<gt>add_indirect_objects()>.
 
 =head2 dump_object
 
