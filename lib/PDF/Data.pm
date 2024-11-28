@@ -1344,11 +1344,11 @@ sub compress_stream {
 sub write_indirect_object {
   my ($self, $pdf_file_data, $seen, $id, $object) = @_;
 
-  # Write the indirect object header.
-  ${$pdf_file_data} .= "$id 0 obj\n";
-
   # Save startxref value.
   my $startxref = length(${$pdf_file_data});
+
+  # Write the indirect object header.
+  ${$pdf_file_data} .= "$id 0 obj\n";
 
   # Write the object itself.
   $self->write_object($pdf_file_data, $seen, $object, 0);
