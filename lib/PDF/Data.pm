@@ -1781,7 +1781,7 @@ sub write_object {
     }
     ${$pdf_file_data} .= "\n" if $spaces eq " " and not $self->{-minify};
     $self->serialize_object($pdf_file_data, join("", " " x $indent, "]\n"));
-  } elsif (reftype($object) eq "SCALAR") {
+  } elsif ((reftype($object) // "") eq "SCALAR") {
     # Unresolved indirect reference.
     my ($id, $gen) = split /-/, ${$object};
     $gen ||= "0";
