@@ -28,23 +28,30 @@ our $program = basename $0;
 
 # List of command-line options.
 our @option_list = (
-  "output_file|o=s" => \( our $output_file   = "-" ),
+  "output_file|o=s"   => \( our $output_file       = "-" ),
 
-  "verbose|v"       => \( our $verbose       = ""  ),
-  "inplace|i"       => \( our $inplace       = ""  ),
+  "verbose|v"         => \( our $verbose           = ""  ),
+  "inplace|i"         => \( our $inplace           = ""  ),
 
-  "dump"            => \( our $dump          = ""  ),
-  "outline"         => \( our $outline       = ""  ),
+  "dump"              => \( our $dump              = ""  ),
+  "outline"           => \( our $outline           = ""  ),
 
-  "find_bbox"       => \( our $find_bbox     = ""  ),
-  "new_bbox"        => \( our $new_bbox      = ""  ),
+  "find_bbox"         => \( our $find_bbox         = ""  ),
+  "new_bbox"          => \( our $new_bbox          = ""  ),
 
-  "compress"        => \( our $compress      = 0   ),
-  "decompress"      => \( our $decompress    = ""  ),
-  "minify"          => \( our $minify        = 0   ),
+  "compress"          => \( our $compress          = 0   ),
+  "decompress"        => \( our $decompress        = ""  ),
+  "minify"            => \( our $minify            = 0   ),
+  "no-minify"         => \( our $no_minify         = ""  ),
+  "object-streams"    => \( our $object_streams    = 0   ),
+  "no-object-streams" => \( our $no_object_streams = ""  ),
+  "optimize"          => \( our $optimize          = 0   ),
+  "no-optimize"       => \( our $no_optimize       = ""  ),
 
-  "help|h|?"        => \( our $print_help    = ""  ),
-  "version|V"       => \( our $print_version = ""  ),
+  "pdf-version=s"     => \( our $pdf_version       = ""  ),
+
+  "help|h|?"          => \( our $print_help        = ""  ),
+  "version|V"         => \( our $print_version     = ""  ),
 );
 
 # Help message.
@@ -70,6 +77,13 @@ Options:
   --compress                     Compress all PDF stream objects.
   --decompress                   Decompress all compressed PDF stream objects.
   --minify                       Remove whitespace/comments from content streams.
+  --no-minify                    Don't remove whitespace/comments from content streams.
+  --object-streams               Use PDF 1.5 object streams,
+  --no-object-streams            Don't use PDF 1.5 object streams,
+  --optimize                     Enable optimizations (--compress, --minify, --object-streams).
+  --no-optimize                  Disable optimizations (--compress, --minify, --object-streams).
+
+  --pdf-version <version>        Specify PDF version to use.
 
   --help        (-h)             Print this help message.
   --version     (-V)             Print the version number of this program.
@@ -135,9 +149,17 @@ if ($dump) {
     print STDERR "Renamed original PDF file \"$output_file\" to \"$output_file.bak\".\n\n";
   }
 
+  # Set flags.
+  $pdf->{-compress}           = $compress;
+  $pdf->{-decompress}         = 1 if $decompress;
+  $pdf->{-minify}             = $minify;
+  $pdf->{-no_minify}          = 1 if $no_minify;
+  $pdf->{-object_streams}     = $object_streams;
+  $pdf->{-no_object_streams}  = 1 if $no_object_streams;
+  $pdf->{-optimize}           = $optimize;
+  $pdf->{-no_optimize}        = 1 if $no_optimize;
+  $pdf->{-pdf_version}        = $pdf_version if $pdf_version;
+
   # Generate output PDF.
-  $pdf->{-compress}   = $compress;
-  $pdf->{-decompress} = 1 if $decompress;
-  $pdf->{-minify}     = $minify;
   $pdf->write_pdf($output_file, $time);
 }
