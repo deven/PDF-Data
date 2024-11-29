@@ -23,10 +23,10 @@ use Scalar::Util        qw[blessed reftype];
 use bytes;
 
 # Basic parsing regular expressions.
-our $n  = qr/(?:\n|\r\n?)/;                         # Match a newline. (LF, CRLF or CR)
-our $ss = '\x00\x09\x0a\x0c\x0d\x20';               # List of PDF whitespace characters.
-our $s  = "[$ss]";                                  # Match a single PDF whitespace character.
-our $ws = qr/(?:(?:(?>(?!%%EOF)%[^\r\n]*)?$s+)+)/;  # Match whitespace, including PDF comments except %%EOF marker.
+our $n  = qr/(?:\n|\r\n?)/o;             # Match a newline. (LF, CRLF or CR)
+our $ss = '\x00\x09\x0a\x0c\x0d\x20';    # List of PDF whitespace characters.
+our $s  = "[$ss]";                       # Match a single PDF whitespace character.
+our $ws = qr/(?:$s*(?>%[^\r\n]*)?$s+)/o; # Match whitespace, including PDF comments.
 
 # Declare prototypes.
 sub is_hash ($);
@@ -184,7 +184,7 @@ sub parse_pdf {
   $self = bless \%args, $class;
 
   # Validate minimal PDF file structure starting with %PDF and ending with %%EOF, possibly surrounded by garbage.
-  my ($pdf_version, $binary_signature) = $data =~ /%PDF-(\d+\.\d+)$s*?$n(?:$s*%$s*([\x80-\xff]{4,}).*?$n)?.*%%EOF/s
+  my ($pdf_version, $binary_signature) = $data =~ /%PDF-(\d+\.\d+)$s*?$n(?:$s*%$s*([\x80-\xff]{4,}).*?$n)?.*%%EOF/so
     or croak join(": ", $self->file || (), "File does not contain a valid PDF document!\n");
 
   # Get starting offset of %PDF line.
@@ -192,7 +192,7 @@ sub parse_pdf {
 
   # Check PDF version.
   warn join(": ", $self->file || (), "Warning: PDF version $pdf_version not supported!\n")
-    unless $pdf_version =~ /^1\.[0-7]$/;
+    unless $pdf_version =~ /^1\.[0-7]$/o;
 
   # Save parsed PDF version number and binary signature (if any).
   $self->{-pdf_version}      = $pdf_version;
@@ -514,7 +514,7 @@ sub find_bbox {
   # Determine bounding box from content stream.
   foreach (@lines) {
     # Skip neutral lines.
-    next if m{^(?:/Figure <</MCID \d >>BDC|/PlacedGraphic /MC\d BDC|EMC|/GS\d gs|BX /Sh\d sh EX Q|[Qqh]|W n|$num $num $num $num $num $num cm)$s*$};
+    next if m{^(?:/Figure <</MCID \d >>BDC|/PlacedGraphic /MC\d BDC|EMC|/GS\d gs|BX /Sh\d sh EX Q|[Qqh]|W n|$num $num $num $num $num $num cm)$s*$}o;
 
     # Capture coordinates from drawing operations to calculate bounding box.
     my (@x, @y);
@@ -942,40 +942,110 @@ sub get_hash_node {
 # Parse PDF objects into Perl representations.
 sub parse_objects {
   my ($self, $data, $offset_arg) = @_;
+  my $length;
+  our $offset;
 
   # Alias local $_ variable to $data or ${$data}.
   local($_) = "";
   *_ = ref($data) eq "SCALAR" ? $data : \$data;
 
-  # Make sure offset is a reference.
-  my $offset = ref $offset_arg ? $offset_arg : \$offset_arg;
+  # Alias local $offset variable to $offset_arg or ${$offset_arg}.
+  local($offset) = "";
+  *offset = ref $offset_arg ? $offset_arg : \$offset_arg;
 
   # Parsed PDF objects.
   my @objects;
 
   # Set starting position for matching \G in regular expressions.
-  pos = ${$offset};
+  pos = $offset;
 
   # Parse PDF objects in input string.
-  while ((${$offset} = pos) < length) {
-    # Parse the next PDF object.
-    if (/\G$ws/gc) {                                                            # Strip leading whitespace/comments.
-      next;
-    } elsif (/\G%%EOF/gc) {                                                     # End of PDF file marker.
-      next;
-    } elsif (/\G(>>|\])/gc) {                                                   # End of dictionary or array.
-      ${$offset} = pos;
-      push @objects, {
-        data => $1,
-        type => "token",
-      };
-      last;
-    } elsif (/\G<</gc) {                                                        # Dictionary: <<...>>
-      my $dict_offset = ${$offset};
+  while (m{\G((?>$ws*))(?:                                  # Leading whitespace/comments, if any.                        ($1)
+    (/((?:[^$ss()<>\[\]{}/%\#]+|\#(?!00)[0-9A-Fa-f]{2})*))  # Name object:                           /Name                ($2, $3)
+    |(([+-]?(?=\.?\d)\d*)\.?\d*)                            # Real number:                           [+-]999.999          ($4)
+                                                            # Integer:                               [+-]999              ($5)
+    (?:$ws+(\d)$ws+(?:(R)|(obj)))?                          # Indirect reference:                    999 0 R              ($5, $6, $7)
+                                                            # Indirect object:                       999 0 obj            ($5, $6, $8)
+    |(>>|\])                                                # End of dictionary/array:               >> or ]              ($9)
+    |(<<)                                                   # Dictionary:                            <<...>>              ($10)
+    |(\[)                                                   # Array:                                 [...]                ($11)
+    |(\((?:(?>[^\\()]+)|\\.|(?-1))*\))                      # String literal (with nested parens):   (...)                ($12)
+    |startxref$ws+(\d+)                                     # Start of cross-reference table/stream: startxref 999        ($13)
+    |(endobj)                                               # Indirect object definition:            999 0 obj ... endobj ($14)
+    |(stream)                                               # Stream content:                        stream ... endstream ($15)
+    |(ID)(?s:$s(.*?)(?:\r\n|$s)?EI$s)?                      # Inline image data:                     ID ... EI            ($16, $17)
+    |(xref)                                                 # Cross-reference table:                 xref                 ($18)
+    |(true|false)                                           # Boolean:                               true or false        ($19)
+    |(null)                                                 # Null object:                           null                 ($20)
+    |([^$ss()<>\[\]{}/%]+)                                  # Other token:                           TOKEN                ($21)
+    |<([0-9A-Fa-f$ss]*)>                                    # Hexadecimal string literal:            <...>                ($22)
+    |(\z)                                                   # End of file.                                                ($23)
+    |([^\r\n]*))                                            # Parse error.                                                ($24)
+  }xgco) {
+    # Determine offset and length of match.
+    ($offset, $length) = ($+[1], $+[0] - $+[1]);
 
-      ${$offset} = pos;
-      my @pairs = $self->parse_objects($data, $offset);
-      pos = ${$offset};
+    # Process matching regular expression captures.
+    if (defined $2) {                                         # Name object: /Name ($2, $3)
+      my ($token, $name) = ($2, $3);
+      $name =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/geo if $self->{-pdf_version} >= 1.2;
+
+      push @objects, {
+        data   => $token,
+        type   => "name",
+        name   => $name,
+        offset => $offset,
+        length => $length,
+      };
+    } elsif (defined $4 and not defined $6) {                 # Integer/real number: [+-]999[.999] ($4, $5)
+      push @objects, {
+        data   => $4,
+        type   => ($4 eq $5 ? "int" : "real"),
+        offset => $offset,
+        length => $length,
+      };
+    } elsif (defined $7) {                                    # Indirect reference: 999 0 R ($5, $6, $7)
+      my ($type, $id) = ($7, join("-", $5, $6 || ()));
+      my $object = $self->{-indirect_objects}{$id};
+
+      if ($object) {
+        $object = { %{$object} };
+      } else {
+        $object = {
+          data   => \$id,
+          type   => "R",
+          offset => $offset,
+          length => $length,
+        };
+        push @{$self->{-unresolved_refs}{$id}}, \$object->{data};
+      }
+
+      push @objects, $object;
+    } elsif (defined $8) {                                    # Indirect object: 999 0 obj ($5, $6, $8)
+      my ($type, $id) = ($8, join("-", $5, $6 || ()));
+
+      push @objects, {
+        data   => $id,
+        type   => $type,
+        offset => $offset,
+        length => $length,
+      };
+    } elsif (defined $9) {                                    # End of dictionary/array: >> or ] ($9)
+      $offset = pos;
+
+      push @objects, {
+        data   => $9,
+        type   => "token",
+        offset => $offset,
+        length => $length,
+      };
+
+      last;
+    } elsif (defined $10) {                                   # Dictionary: <<...>> ($10)
+      my $dict_offset = $offset;
+
+      $offset = pos;
+      my @pairs = $self->parse_objects($data, \$offset);
 
       my $token = pop @pairs
         or croak join(": ", $self->file || (), "Byte offset $dict_offset: Parse error: \"<<\" token found without matching \">>\" token!\n");
@@ -1007,12 +1077,11 @@ sub parse_objects {
       }
 
       push @objects, $object;
-    } elsif (/\G\[/gc) {                                                        # Array: [...]
-      my $array_offset = ${$offset};
+    } elsif (defined $11) {                                   # Array: [...] ($11)
+      my $array_offset = $offset;
 
-      ${$offset} = pos;
-      my @array_objects = $self->parse_objects($data, $offset);
-      pos = ${$offset};
+      $offset = pos;
+      my @array_objects = $self->parse_objects($data, \$offset);
 
       my $token = pop @array_objects
         or croak join(": ", $self->file || (), "Byte offset $array_offset: Parse error: \"[\" token found without matching \"]\" token!\n");
@@ -1031,181 +1100,155 @@ sub parse_objects {
         offset => $array_offset,
         length => pos() - $array_offset,
       };
-    } elsif (/\G(\((?:(?>[^\\()]+)|\\.|(?1))*\))/gc) {                          # String literal: (...) (including nested parens)
-      my $string = $1;
-      $string =~ s/\\$n//g;
-      $string =~ s/$n/\n/g;
+    } elsif (defined $12) {                                   # String literal (with nested parens): (...) ($12)
+      my $string = $12;
+      $string =~ s/\\$n//go;
+      $string =~ s/$n/\n/go;
+
       push @objects, {
-        data => $string,
-        type => "string",
+        data   => $string,
+        type   => "string",
+        offset => $offset,
+        length => $length,
       };
-    } elsif (/\G<([0-9A-Fa-f$ss]*)>/gc) {                                       # Hexadecimal string literal: <...>
-      my $hex_string = lc($1);
-      $hex_string =~ s/$s+//g;
-      $hex_string .= "0" if length($hex_string) % 2 == 1;
+    } elsif (defined $13) {                                   # Start of cross-reference table/stream: startxref 999 ($13)
       push @objects, {
-        data => "<$hex_string>",
-        type => "hex",
+        data   => $13,
+        type   => "startxref",
+        offset => $offset,
+        length => $length,
       };
-    } elsif (/\G(\/((?:[^$ss()<>\[\]{}\/%\#]+|\#(?!00)[0-9A-Fa-f]{2})+))/gc) {  # Name: /Name
-      my ($token, $name) = ($1, $2);
-      $name =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/ge;
-      push @objects, {
-        data => $token,
-        type => "name",
-        name => $name,
-      };
-    } elsif (/\G(\/?[^$ss()<>\[\]{}\/%]+)/gc) {                                 # Number or other token
-      # Check for tokens of special interest.
-      my $token = $1;
-      if ($token eq "obj" or $token eq "R") {                                   # Indirect object/reference: 999 0 obj or 999 0 R
-        my ($id, $gen) = splice @objects, -2;
-        my $type = $token eq "R" ? "reference" : "definition";
-        "$id->{type} $gen->{type}" eq "int int"
-          or croak join(": ", $self->file || (), "Byte offset ${$offset}: $id->{data} $gen->{data} $token: Invalid indirect object $type!\n");
-        my $new_id = join("-", $id->{data}, $gen->{data} || ());
+    } elsif (defined $14) {                                   # Indirect object definition: 999 0 obj ... endobj ($14)
+      my ($id, $object) = splice @objects, -2;
 
-        my $object = {
-          data   => $new_id,
-          type   => $token,
-          offset => $id->{offset},
-        };
+      $id->{type} eq "obj" or croak join(": ", $self->file || (), "Byte offset $offset: Invalid indirect object definition!\n");
+      $object->{id}                                     = $id->{data};
+      $self->{-indirect_objects}{$id->{data}}           = $object;
+      $self->{-indirect_objects}{offset}{$id->{offset}} = $object;
+      push @objects, $object;
 
-        if ($token eq "R") {
-          if ($self->{-indirect_objects}{$new_id}) {
-            $object->{data} = $self->{-indirect_objects}{$new_id}{data};
-          } else {
-            $object->{data} = \$new_id;
-            push @{$self->{-unresolved_refs}{$new_id}}, \$object->{data};
-          }
+      if (my $refs = delete $self->{-unresolved_refs}{$id->{data}}) {
+        foreach my $ref (@{$refs}) {
+          ${$ref} = $object->{data};
         }
-
-        push @objects, $object;
-      } elsif ($token eq "ID") {                                                # Inline image data: ID ... EI
-        /\G$s(.*?)(?:\r\n|$s)?EI$s/sgc or croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid inline image data!\n");
-        my $image = $1;
-
-        # TODO: Apply encoding filters?
-
-        push @objects, {
-          data => $image,
-          type => "image"
-        };
-      } elsif ($token eq "stream") {                                            # Stream content: stream ... endstream
-        my ($id, $stream) = @objects[-2,-1];
-        $stream->{type} eq "dict" or croak join(": ", $self->file || (), "Byte offset ${$offset}: Stream dictionary missing!\n");
-        $stream->{type} = "stream";
-        $id->{type} eq "obj" or croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid indirect object definition!\n");
-
-        # Save cross-reference streams with trailer dictionaries.
-        push @{$self->{-trailers}}, $stream if ($stream->{data}{Type} // "") eq "/XRef";
-
-        $_ = $_->{data} for $id, $stream;
-        defined(my $length = $stream->{Length})
-          or carp join(": ", $self->file || (), "Byte offset ${$offset}: Stream #$id: Stream length not found in metadata!\n");
-        /\G\r?\n/gc
-          or die join(": ", $self->file || (), "Byte offset " . pos . ": Stream #$id: Parsing error!\n");
-
-        # Save the starting offset for the stream.
-        my $pos = pos;
-
-        # If the stream length is declared, make sure it is valid.
-        if (defined $length && !ref($length)) {
-          pos = $pos + $length;
-          undef $length unless /\G($s*endstream$ws)/gc;
-          pos = $pos;
-        }
-
-        # If the declared stream length is missing or invalid, determine the shortest possible length to make the stream valid.
-        unless (defined($length) && !ref($length)) {
-          if (/\G((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s/gc) {
-            $length = $+[1] - $-[1];
-          } else {
-            croak join(": ", $self->file || (), "Byte offset ${$offset}: Stream #$id: Invalid stream definition!\n");
-          }
-        }
-
-        $stream->{-data}    = substr($_, $pos, $length) // "";
-        $stream->{-id}      = $id;
-        $stream->{-offset}  = ${$offset};
-        $stream->{-length}  = $length;
-        $stream->{Length} //= $length;
-
-        push @{$self->{-streams}}, $stream;
-
-        ${$offset} = pos = $pos + $length;
-        /\G$s*endstream$ws/gc
-          or die join(": ", $self->file || (), "Byte offset ${$offset}: Stream #$id: Parsing error!\n");
-
-        $self->filter_stream($stream) if $stream->{Filter};
-
-        # Parse object streams.
-        $self->parse_object_stream($stream) if ($stream->{Type} // "") eq "/ObjStm";
-      } elsif ($token eq "endobj") {                                            # Indirect object definition: 999 0 obj ... endobj
-        my ($id, $object) = splice @objects, -2;
-        $id->{type} eq "obj" or croak join(": ", $self->file || (), "Byte offset ${$offset}: Invalid indirect object definition!\n");
-        $object->{id}                                     = $id->{data};
-        $self->{-indirect_objects}{$id->{data}}           = $object;
-        $self->{-indirect_objects}{offset}{$id->{offset}} = $object;
-        push @objects, $object;
-
-        if (my $refs = delete $self->{-unresolved_refs}{$id->{data}}) {
-          foreach my $ref (@{$refs}) {
-            ${$ref} = $object->{data};
-          }
-        }
-      } elsif ($token eq "xref") {                                              # Cross-reference table
-        # Parse one or more cross-reference subsections.
-        while (/\G$ws(\d+)$ws(\d+)$n/gc) {
-          my ($first, $count) = ($1, $2);
-          for (my $i = 0; $i < $count; $i++) {
-            if (/\G(\d{10})\ (\d{5})\ ([fn])(?:\ [\r\n]|\r\n)/gc) {
-              # my ($offset, $generation, $keyword) = ($1, $2, $3);
-              # my $id = $first + $i
-              # my $id = join("-", $first + $i, $generation || ());
-              # $xref->{$id} = int($offset);
-            } else {
-              carp join(": ", $self->file || (), "Byte offset " . pos . ": Invalid cross-reference table!\n");
-            }
-          }
-        }
-      } elsif ($token =~ /^[+-]?\d+$/) {                                        # Integer: [+-]999
-        my $object = {
-          data => $token,
-          type => "int",
-        };
-
-        if (@objects and $objects[-1]{type} eq "token" and $objects[-1]{data} eq "startxref") {
-          $object->{type} = "startxref";
-          pop @objects;
-        }
-
-        push @objects, $object;
-      } elsif ($token =~ /^[+-]?(?:\d+\.\d*|\.\d+)$/) {                         # Real number: [+-]999.999
-        push @objects, {
-          data => $token,
-          type => "real",
-        };
-      } elsif ($token =~ /^(?:true|false)$/) {                                  # Boolean: true or false
-        push @objects, {
-          data => $token,
-          type => "bool",
-          bool => $token eq "true",
-        };
-      } else {                                                                  # Other token
-        push @objects, {
-          data => $token,
-          type => "token",
-        };
       }
-    } else {
-      /\G([^\r\n]*)/gc;
-      croak join(": ", $self->file || (), "Byte offset ${$offset}: Parse error on input: \"$1\"\n");
-    }
+    } elsif (defined $15) {                                   # Stream content: stream ... endstream ($15)
+      my ($id, $stream) = @objects[-2,-1];
 
-    # Update offset/length of last object.
-    $objects[-1]{offset} //= ${$offset};
-    $objects[-1]{length} //= $+[0] - $objects[-1]{offset};
+      $stream->{type} eq "dict" or croak join(": ", $self->file || (), "Byte offset $offset: Stream dictionary missing!\n");
+      $stream->{type} = "stream";
+      $id->{type} eq "obj" or croak join(": ", $self->file || (), "Byte offset $offset: Invalid indirect object definition!\n");
+
+      # Save cross-reference streams with trailer dictionaries.
+      push @{$self->{-trailers}}, $stream if ($stream->{data}{Type} // "") eq "/XRef";
+
+      $_ = $_->{data} for $id, $stream;
+      defined(my $length = $stream->{Length})
+        or carp join(": ", $self->file || (), "Byte offset $offset: Stream #$id: Stream length not found in metadata!\n");
+      /\G\r?\n/gc
+        or die join(": ", $self->file || (), "Byte offset " . pos . ": Stream #$id: Parsing error!\n");
+
+      # Save the starting offset for the stream.
+      my $pos = pos;
+
+      # If the stream length is declared, make sure it is valid.
+      if (defined $length && !ref($length)) {
+        pos = $pos + $length;
+        undef $length unless /\G($s*endstream$ws+)/gco;
+        pos = $pos;
+      }
+
+      # If the declared stream length is missing or invalid, determine the shortest possible length to make the stream valid.
+      unless (defined($length) && !ref($length)) {
+        if (/\G((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s/gc) {
+          $length = $+[1] - $-[1];
+        } else {
+          croak join(": ", $self->file || (), "Byte offset $offset: Stream #$id: Invalid stream definition!\n");
+        }
+      }
+
+      $stream->{-data}    = substr($_, $pos, $length) // "";
+      $stream->{-id}      = $id;
+      $stream->{-offset}  = $offset;
+      $stream->{-length}  = $length;
+      $stream->{Length} //= $length;
+
+      push @{$self->{-streams}}, $stream;
+
+      $offset = pos = $pos + $length;
+      /\G$s*endstream$ws+/gco
+        or die join(": ", $self->file || (), "Byte offset $offset: Stream #$id: Parsing error!\n");
+
+      $self->filter_stream($stream) if $stream->{Filter};
+
+      # Parse object streams.
+      $self->parse_object_stream($stream) if ($stream->{Type} // "") eq "/ObjStm";
+    } elsif (defined $16) {                                   # Inline image data: ID ... EI ($16, $17)
+      my $image = $17 or croak join(": ", $self->file || (), "Byte offset $offset: Invalid inline image data!\n");
+
+      # TODO: Apply encoding filters?
+
+      push @objects, {
+        data   => $image,
+        type   => "image",
+        offset => $offset,
+        length => $length,
+      };
+    } elsif (defined $18) {                                   # Cross-reference table: xref ($18)
+      # Parse one or more cross-reference subsections.
+      while (/\G$ws*(\d+)$ws+(\d+)$n/gco) {
+        my ($first, $count) = ($1, $2);
+
+        for (my $i = 0; $i < $count; $i++) {
+          if (/\G(\d{10})\ (\d{5})\ ([fn])(?:\ [\r\n]|\r\n)/gco) {
+            # my ($offset, $generation, $keyword) = ($1, $2, $3);
+            # my $id = $first + $i
+            # my $id = join("-", $first + $i, $generation || ());
+            # $xref->{$id} = int($offset);
+          } else {
+            carp join(": ", $self->file || (), "Byte offset " . pos . ": Invalid cross-reference table!\n");
+          }
+        }
+      }
+    } elsif (defined $19) {                                   # Boolean: true or false ($19)
+      push @objects, {
+        data   => $19,
+        type   => "bool",
+        bool   => $19 eq "true",
+        offset => $offset,
+        length => $length,
+      };
+    } elsif (defined $20) {                                   # Null object: null ($20)
+      push @objects, {
+        data   => $20,
+        type   => "null",
+        offset => $offset,
+        length => $length,
+      };
+    } elsif (defined $21) {                                   # Other token: TOKEN ($21)
+      push @objects, {
+        data   => $21,
+        type   => "token",
+        offset => $offset,
+        length => $length,
+      };
+    } elsif (defined $22) {                                   # Hexadecimal string literal: <...> ($22)
+      my $hex_string = lc($22);
+
+      $hex_string =~ s/$s+//go;
+      $hex_string .= "0" if length($hex_string) % 2 == 1;
+
+      push @objects, {
+        data   => "<$hex_string>",
+        type   => "hex",
+        offset => $offset,
+        length => $length,
+      };
+    } elsif (defined $23) {                                   # End of file. ($23)
+      last;
+    } else {                                                  # Parse error: ??? ($24)
+      croak join(": ", $self->file || (), "Byte offset $offset: Parse error on input: \"$24\"\n");
+    }
   }
 
   # Return parsed PDF objects.
@@ -1251,7 +1294,7 @@ sub parse_object_stream {
   my @pairs;
   while (@pairs < $n) {
     my $stream_offset = pos;
-    if (/\G(\d+)$s+(\d+)$s+/gc) {
+    if (/\G(\d+)$s+(\d+)$s+/gco) {
       push @pairs, [$1, $2];
     } else {
       croak join(": ", $self->file || (), "Byte offset $stream->{-offset}: Stream #$stream->{-id}: Stream byte offset $stream_offset",
@@ -1489,7 +1532,7 @@ sub create_object_streams {
     my $object = $self->{-indirect_objects}[$i];
 
     # Skip stream objects and the encryption dictionary (if any).  For Linearized PDF, also skip document catalog and page objects.
-    if (is_stream($object) || $object eq ($self->{Encrypt} // "") || ($self->{-linearized} && ($object->{Type} // "") =~ m{^/(Catalog|Pages)$})) {
+    if (is_stream($object) || $object eq ($self->{Encrypt} // "") || ($self->{-linearized} && ($object->{Type} // "") =~ m{^/(Catalog|Pages)$}o)) {
       # Reserve space for cross-reference stream data for this uncompressed object.
       $xrefs .= pack('CNn', 1, 0, 0);
 
@@ -1860,7 +1903,7 @@ sub dump_object {
       for (my $i = 0; $i < @{$object}; $i++) {
         $output .= sprintf "%s%s,\n", " " x ($indent + 2), $self->dump_object($object->[$i], "$label\[$i\]", $seen, $indent + 2, $mode) if ref $object->[$i];
       }
-      if ($output =~ /\A$s+(.*?),\n\z/) {
+      if ($output =~ /\A$s+(.*?),\n\z/o) {
         $output = "[... $1]";
       } elsif ($output =~ /\n/) {
         $output = join("", "[ # $label\n", $output, (" " x $indent), "]");
