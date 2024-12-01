@@ -1631,7 +1631,7 @@ sub enumerate_indirect_objects {
   $self->add_indirect_objects(@{$self->{Root}{OCProperties}{OCGs}}) if $self->{Root}{OCProperties};
 
   # Enumerate shared objects.
-  $self->enumerate_shared_objects({}, {}, $self->{Root});
+  $self->enumerate_shared_objects({}, $self->{Root});
 
   # Add referenced indirect objects.
   for (my $i = 1; $i <= $#{$self->{-indirect_objects}}; $i++) {
@@ -1678,33 +1678,23 @@ sub enumerate_indirect_objects {
 
 # Enumerate shared objects.
 sub enumerate_shared_objects {
-  my ($self, $seen, $ancestors, $object) = @_;
+  my ($self, $seen, $object) = @_;
 
   # Add shared indirect objects.
   if ($seen->{$object}++) {
     $self->add_indirect_objects($object) unless $self->{-indirect_objects}[0]{$object};
-    return;
-  }
-
-  # Return if this object is an ancestor of itself.
-  return if $ancestors->{$object};
-
-  # Add this object to the lookup hash of ancestors.
-  $ancestors->{$object}++;
-
-  # Recurse to check entire object tree.
-  if (is_hash $object) {
-    foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
-      $self->enumerate_shared_objects($seen, $ancestors, $object->{$key}) if ref $object->{$key};
-    }
-  } elsif (is_array $object) {
-    foreach my $obj (@{$object}) {
-      $self->enumerate_shared_objects($seen, $ancestors, $obj) if ref $obj;
+  } else {
+    # Recurse to check entire object tree.
+    if (is_hash $object) {
+      foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
+        $self->enumerate_shared_objects($seen, $object->{$key}) if ref $object->{$key};
+      }
+    } elsif (is_array $object) {
+      foreach my $obj (@{$object}) {
+        $self->enumerate_shared_objects($seen, $obj) if ref $obj;
+      }
     }
   }
-
-  # Remove this object from the lookup hash of ancestors.
-  delete $ancestors->{$object};
 }
 
 # Add indirect objects.
@@ -2541,7 +2531,7 @@ PDF data structure need to be indirect objects.
 
 =head2 enumerate_shared_objects
 
-  $pdf->enumerate_shared_objects($seen, $ancestors, $object);
+  $pdf->enumerate_shared_objects($seen, $object);
 
 Used by C<$pdf-E<gt>enumerate_indirect_objects()> to find objects which are
 already shared (referenced from multiple objects in the PDF data structure).
