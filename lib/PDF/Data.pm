@@ -1752,7 +1752,9 @@ sub write_object {
   }
 
   # Check object type.
-  if (is_hash $object) {
+  if (not defined $object) {
+    die join(": ", $self->file || (), "Object is undefined!\n");
+  } elsif (is_hash $object) {
     # For streams, compress the stream or update the length metadata.
     if (is_stream $object) {
       $object->{-data} //= "";
@@ -1814,7 +1816,7 @@ sub write_object {
     }
     ${$pdf_file_data} .= "\n" if $spaces eq " " and not $self->{-minify};
     $self->serialize_object($pdf_file_data, join("", " " x $indent, "]\n"));
-  } elsif ((reftype($object) // "") eq "SCALAR") {
+  } elsif (ref $object and reftype($object) eq "SCALAR") {
     # Unresolved indirect reference.
     my ($id, $gen) = split /-/, ${$object};
     $gen ||= "0";
