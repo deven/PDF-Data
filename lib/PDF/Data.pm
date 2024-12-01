@@ -1739,7 +1739,7 @@ sub should_minify {
 sub should_use_object_streams {
   my ($self) = @_;
 
-  ($self->{-use_object_streams} || $self->{-optimize}) && !($self->{-no_use_object_streams} || $self->{-no_optimize})
+  ($self->{-use_object_streams} || $self->{-optimize}) && !($self->{-no_object_streams} || $self->{-no_use_object_streams} || $self->{-no_optimize})
 }
 
 # Write a direct object to the string of PDF file data.
@@ -2568,9 +2568,9 @@ stream when writing PDF data.
 
 Used by C<$pdf-E<gt>pdf_file_data()> and C<$pdf-E<gt>write_indirect_objects()>
 to check for C<$pdf-E<gt>{-use_object_streams}>,
-C<$pdf-E<gt>{-no_use_object_streams}>, C<$pdf-E<gt>{-optimize}> and
-C<$pdf-E<gt>{-no_optimize}> flags to decide whether or not PDF 1.5 object
-streams should be used when writing PDF data.
+C<$pdf-E<gt>{-no_object_streams}>, C<$pdf-E<gt>{-no_use_object_streams}>,
+C<$pdf-E<gt>{-optimize}> and C<$pdf-E<gt>{-no_optimize}> flags to decide whether
+or not PDF 1.5 object streams should be used when writing PDF data.
 
 =head2 write_object
 
