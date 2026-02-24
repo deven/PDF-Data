@@ -1489,21 +1489,23 @@ sub write_xref_stream {
   my $length    = length $data;
 
   # Cross-reference stream object doubles as trailer dictionary.
-  $self->{-id}       = $id;
-  $self->{-data}     = $data;
-  $self->{-length}   = $length;
-  $self->{-compress} = 1;
-  $self->{Length}    = $length;
-  $self->{Type}      = "/XRef";
-  $self->{Size}      = $size;
-  $self->{Index}     = [0, $size];
-  $self->{W}         = [1, 4, 2];
+        $self->{-id}       = $id;
+  local $self->{-data}     = $data;
+  local $self->{-compress} = 1;
+  local $self->{Length}    = $length;
+  local $self->{Type}      = "/XRef";
+        $self->{Size}      = $size;
+  local $self->{Index}     = [0, $size];
+  local $self->{W}         = [1, 4, 2];
 
   # Save the cross-reference stream object.
   push @{$self->{-indirect_objects}}, $self;
 
   # Write the cross-reference stream object.
   my $startxref = $self->write_indirect_object($pdf_file_data, $seen, $id, $self);
+
+  # Remember the actual size of the cross-reference stream object.
+  $self->{-length} = length(${$pdf_file_data}) - $startxref;
 
   # Write startxref value.
   ${$pdf_file_data} =~ s/\n?\z/\n/;
