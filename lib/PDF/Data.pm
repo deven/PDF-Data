@@ -1,7 +1,7 @@
 package PDF::Data;
 
-# Require Perl v5.18; enable warnings and UTF-8.
-use v5.18;
+# Require Perl v5.16; enable warnings and UTF-8.
+use v5.16;
 use warnings;
 use utf8;
 
@@ -939,12 +939,8 @@ sub get_hash_node {
   return $hash;
 }
 
-# Requires Perl 5.18+ for reentrant regex engine, which allows parse_object_stream
-# to recursively call parse_objects from within a (?{ }) code block.
-use v5.18;
-
-# Package variables used by parser regex.
-our (@objects, @context, $self, $offset, $start, $sstart);
+# Package variables used by parser.
+our (@objects, @context, $self, $start, $sstart);
 
 # Context stack (empty at top level):
 #   []       (arrayref)   — PDF array being constructed (raw values pushed)
@@ -953,462 +949,318 @@ our (@objects, @context, $self, $offset, $start, $sstart);
 #
 # !@context means top level; parsed objects go into @objects with metadata wrappers.
 # !ref $context[-1] means a dict key is pending; $context[-2] is the hashref.
-#
-# Single-pass parsing regex.
-my $PARSE = qr{(?:(?>$ws*)(?{ $start = pos })(?:
-
-  # Name object: /Name ($1, $2)
-  (/((?:[^$ss()<>\[\]{}/%\#]+|\#(?!00)[0-9A-Fa-f]{2})*))
-  (?{
-    my $name = $2;
-    $name =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/geo
-      if $self->{-pdf_version} >= 1.2 and index($name, '#') >= 0;
-
-    if (!@context) {
-      push @objects, {
-        data   => $1,
-        type   => "name",
-        name   => $name,
-        offset => $start,
-        length => pos() - $start,
-      };
-    } elsif (!ref $context[-1]) {
-      # Pending dict key — this name is a value.
-      $context[-2]{$context[-1]} = $1;
-      pop @context;
-    } elsif (ref $context[-1] eq 'HASH') {
-      # In dict expecting key — this name becomes the key.
-      push @context, $name;
-    } else {
-      push @{$context[-1]}, $1;
-    }
-  })
-
-  # Indirect reference or indirect object ($3, $4, $5)
-  |(\d+)$ws+(\d+)$ws+(R|obj)
-  (?{
-    if ($5 eq "obj") {
-      # Indirect object definition: 999 0 obj (always top level)
-      push @objects, {
-        data   => join("-", $3, $4 || ()),
-        type   => $5,
-        offset => $start,
-        length => pos() - $start,
-      };
-    } else {
-      # Indirect reference: 999 0 R
-      my $id = join("-", $3, $4 || ());
-      my $resolved = $self->{-indirect_objects}{$id};
-
-      if ($resolved) {
-        if (!@context) {
-          push @objects, { %{$resolved} };
-        } elsif (!ref $context[-1]) {
-          my $key = pop @context;
-          $context[-1]{$key} = $resolved->{data};
-        } elsif (ref $context[-1] eq 'HASH') {
-          croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got indirect ref!\n");
-        } else {
-          push @{$context[-1]}, $resolved->{data};
-        }
-      } else {
-        # Unresolved forward reference — store scalar ref placeholder.
-        my $ref = \$id;
-
-        if (!@context) {
-          my $object = {
-            data   => $ref,
-            type   => "R",
-            offset => $start,
-            length => pos() - $start,
-          };
-          push @{$self->{-unresolved_refs}{$id}}, \$object->{data};
-          push @objects, $object;
-        } elsif (!ref $context[-1]) {
-          my $key = pop @context;
-          $context[-1]{$key} = $ref;
-          push @{$self->{-unresolved_refs}{$id}}, \$context[-1]{$key};
-        } elsif (ref $context[-1] eq 'HASH') {
-          croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got indirect ref!\n");
-        } else {
-          my $i = push(@{$context[-1]}, $ref) - 1;
-          push @{$self->{-unresolved_refs}{$id}}, \$context[-1][$i];
-        }
-      }
-    }
-  })
-
-  # Number: [+-]999.999 ($6, $7)
-  |((?>[+-]?(?=\.?\d)\d*(\.\d*)?))
-  (?{
-    # Standalone number (integer or real).
-    if (!@context) {
-      push @objects, {
-        data   => $6,
-        type   => ($7 ? "real" : "int"),
-        offset => $start,
-        length => pos() - $start,
-      };
-    } elsif (!ref $context[-1]) {
-      my $key = pop @context;
-      $context[-1]{$key} = $6;
-    } elsif (ref $context[-1] eq 'HASH') {
-      croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got number!\n");
-    } else {
-      push @{$context[-1]}, $6;
-    }
-  })
-
-  # End of dictionary: >> ($8)
-  |(>>)
-  (?{
-    # If a dict key is pending with no value, that's an error.
-    @context and !ref $context[-1]
-      and croak join(": ", $self->file || (), "Byte offset $start: Parse error: Missing value for key \"$context[-1]\" before \">>\" token!\n");
-
-    @context and ref $context[-1] eq 'HASH'
-      or croak join(": ", $self->file || (), "Byte offset $start: Parse error: \">>\" token found without matching \"<<\" token!\n");
-
-    pop @context;
-
-    if (!@context) {
-      # Returning to top level — check for preceding trailer token.
-      if (@objects >= 2 and ($objects[-2]{type} // "") eq "token" and $objects[-2]{data} eq "trailer") {
-        splice @objects, -2, 1;   # Remove the trailer token.
-        $objects[-1]{type} = "trailer";
-        push @{$self->{-trailers}}, $objects[-1];
-      }
-
-      # Update metadata wrapper length.
-      $objects[-1]{length} = pos() - $objects[-1]{offset};
-    }
-  })
-
-  # End of array: ] ($9)
-  |(\])
-  (?{
-    (@context and ref $context[-1] eq 'ARRAY')
-      or croak join(": ", $self->file || (), "Byte offset $start: Parse error: \"]\" token found without matching \"[\" token!\n");
-
-    pop @context;
-
-    if (!@context) {
-      # Returning to top level — update metadata wrapper length.
-      $objects[-1]{length} = pos() - $objects[-1]{offset};
-    }
-  })
-
-  # Dictionary start: << ($10)
-  |(<<)
-  (?{
-    my $dict = {};
-
-    if (!@context) {
-      push @objects, {
-        data   => $dict,
-        type   => "dict",
-        offset => $start,
-      };
-    } elsif (!ref $context[-1]) {
-      my $key = pop @context;
-      $context[-1]{$key} = $dict;
-    } elsif (ref $context[-1] eq 'HASH') {
-      croak join(": ", $self->file || (), "Byte offset $start: Parse error: Expected dictionary key (name), got \"<<\"!\n");
-    } else {
-      push @{$context[-1]}, $dict;
-    }
-
-    push @context, $dict;
-  })
-
-  # Array start: [ ($11)
-  |(\[)
-  (?{
-    my $array = [];
-
-    if (!@context) {
-      push @objects, {
-        data   => $array,
-        type   => "array",
-        offset => $start,
-      };
-    } elsif (!ref $context[-1]) {
-      my $key = pop @context;
-      $context[-1]{$key} = $array;
-    } elsif (ref $context[-1] eq 'HASH') {
-      croak join(": ", $self->file || (), "Byte offset $start: Parse error: Expected dictionary key (name), got \"[\"!\n");
-    } else {
-      push @{$context[-1]}, $array;
-    }
-
-    push @context, $array;
-  })
-
-  # String literal with nested parens: (...) ($12)
-  |(\((?:(?>[^\\()]+)|\\.|(?-1))*\))
-  (?{
-    my $data = $12;
-    $data =~ s/\\$n//go if index($data, '\\') >= 0;
-    $data =~ s/$n/\n/go if index($data, "\r") >= 0;
-
-    if (!@context) {
-      push @objects, {
-        data   => $data,
-        type   => "string",
-        offset => $start,
-        length => pos() - $start,
-      };
-    } elsif (!ref $context[-1]) {
-      my $key = pop @context;
-      $context[-1]{$key} = $data;
-    } elsif (ref $context[-1] eq 'HASH') {
-      croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got string!\n");
-    } else {
-      push @{$context[-1]}, $data;
-    }
-  })
-
-  # Start of cross-reference table/stream: startxref 999 ($13)
-  |startxref$ws+(\d+)
-  (?{
-    push @objects, {
-      data   => $13,
-      type   => "startxref",
-      offset => $start,
-      length => pos() - $start,
-    };
-  })
-
-  # End of indirect object: endobj ($14)
-  |(endobj)
-  (?{
-    my ($id, $object) = splice @objects, -2;
-
-    ($id and ($id->{type} // "") eq "obj")
-      or croak join(": ", $self->file || (), "Byte offset $start: Invalid indirect object definition!\n");
-    $object->{id}                                      = $id->{data};
-    $self->{-indirect_objects}{$id->{data}}            = $object;
-    $self->{-indirect_objects}{offset}{$id->{offset}}  = $object;
-    push @objects, $object;
-
-    if (my $refs = delete $self->{-unresolved_refs}{$id->{data}}) {
-      foreach my $ref (@{$refs}) {
-        ${$ref} = $object->{data};
-      }
-    }
-  })
-
-  # Stream content: stream ... endstream ($15, $16)
-  |(stream)\r?\n(?{ $sstart = pos })
-  ((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s
-  (?{
-    my ($id, $stream) = @objects[-2,-1];
-
-    ($stream and ($stream->{type} // "") eq "dict")
-      or croak join(": ", $self->file || (), "Byte offset $start: Stream dictionary missing!\n");
-    $stream->{type} = "stream";
-    ($id and ($id->{type} // "") eq "obj")
-      or croak join(": ", $self->file || (), "Byte offset $start: Invalid indirect object definition!\n");
-
-    # Save cross-reference streams with trailer dictionaries.
-    push @{$self->{-trailers}}, $stream if ($stream->{data}{Type} // "") eq "/XRef";
-
-    $_ = $_->{data} for $id, $stream;
-    my $matched_length = length $16;
-
-    # Validate declared stream length.
-    my $length = $stream->{Length};
-    if (defined $length and !ref $length) {
-      if ($length > $matched_length) {
-        carp join(": ", $self->file || (), "Byte offset $start: Stream #$id: Declared length $length exceeds actual stream data!\n");
-        $length = $matched_length;
-      }
-    } else {
-      carp join(": ", $self->file || (), "Byte offset $start: Stream #$id: Stream length not found in metadata!\n")
-        unless defined $length;
-      $length = $matched_length;
-    }
-
-    $stream->{-data}    = substr($_, $sstart, $length) // "";
-    $stream->{-id}      = $id;
-    $stream->{-offset}  = $start;
-    $stream->{-length}  = $length;
-    $stream->{Length}  //= $length;
-
-    push @{$self->{-streams}}, $stream;
-
-    # Process stream immediately — regex engine is reentrant since Perl 5.18.
-    $self->filter_stream($stream) if $stream->{Filter};
-    $self->parse_object_stream($stream) if ($stream->{Type} // "") eq "/ObjStm";
-  })
-
-  # Inline image data: ID ... EI ($17, $18)
-  |(ID)(?s:$s(.*?)(?:\r\n|$s)?EI$s)?
-  (?{
-    croak join(": ", $self->file || (), "Byte offset $start: Invalid inline image data!\n") unless $18;
-
-    if (!@context) {
-      push @objects, {
-        data   => $18,
-        type   => "image",
-        offset => $start,
-        length => pos() - $start,
-      };
-    } elsif (!ref $context[-1]) {
-      my $key = pop @context;
-      $context[-1]{$key} = $18;
-    } elsif (ref $context[-1] eq 'HASH') {
-      croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got inline image!\n");
-    } else {
-      push @{$context[-1]}, $18;
-    }
-  })
-
-  # Cross-reference table: xref ... (entries consumed inline) ($19)
-  |(xref)(?:$ws*\d+$ws+\d+$n(?:\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))*)*
-
-  # Boolean: true or false ($20)
-  |(true|false)
-  (?{
-    if (!@context) {
-      push @objects, {
-        data   => $20,
-        type   => "bool",
-        bool   => $20 eq "true",
-        offset => $start,
-        length => pos() - $start,
-      };
-    } elsif (!ref $context[-1]) {
-      my $key = pop @context;
-      $context[-1]{$key} = $20;
-    } elsif (ref $context[-1] eq 'HASH') {
-      croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got boolean!\n");
-    } else {
-      push @{$context[-1]}, $20;
-    }
-  })
-
-  # Null object: null ($21)
-  |(null)
-  (?{
-    if (!@context) {
-      push @objects, {
-        data   => $21,
-        type   => "null",
-        offset => $start,
-        length => pos() - $start,
-      };
-    } elsif (!ref $context[-1]) {
-      my $key = pop @context;
-      $context[-1]{$key} = $21;
-    } elsif (ref $context[-1] eq 'HASH') {
-      croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got null!\n");
-    } else {
-      push @{$context[-1]}, $21;
-    }
-  })
-
-  # Other token: TOKEN ($22)
-  |([^$ss()<>\[\]{}/%]+)
-  (?{
-    if (!@context) {
-      push @objects, {
-        data   => $22,
-        type   => "token",
-        offset => $start,
-        length => pos() - $start,
-      };
-    } elsif (!ref $context[-1]) {
-      my $key = pop @context;
-      $context[-1]{$key} = $22;
-    } elsif (ref $context[-1] eq 'HASH') {
-      croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got token \"$22\"!\n");
-    } else {
-      push @{$context[-1]}, $22;
-    }
-  })
-
-  # Hexadecimal string literal: <...> ($23)
-  |<([0-9A-Fa-f$ss]*)>
-  (?{
-    my $data = lc($23);
-    $data =~ s/$s+//go;
-    $data .= "0" if length($data) % 2 == 1;
-    $data = "<$data>";
-
-    if (!@context) {
-      push @objects, {
-        data   => $data,
-        type   => "hex",
-        offset => $start,
-        length => pos() - $start,
-      };
-    } elsif (!ref $context[-1]) {
-      my $key = pop @context;
-      $context[-1]{$key} = $data;
-    } elsif (ref $context[-1] eq 'HASH') {
-      croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got hex string!\n");
-    } else {
-      push @{$context[-1]}, $data;
-    }
-  })
-
-  # Parse error ($24)
-  |([^\r\n]+)
-  (?{
-    croak join(": ", $self->file || (), "Byte offset $start: Parse error on input: \"$24\"\n");
-  })
-
-))+}x;
 
 # Parse PDF objects into Perl representations.
 sub parse_objects {
-  my ($me, $data, $start_pos) = @_;
+  my ($me, $data, $start_pos, $no_metadata) = @_;
 
   # Alias local $_ variable to $data or ${$data}.
   local $_;
   *_ = ref($data) eq "SCALAR" ? $data : \$data;
 
-  # Localize package variables used by parser regex.
+  # Localize package variables used by parser.
   local($self, @objects, @context, $start, $sstart) = ($me);
 
-  # Set starting position for parsing.
-  pos = $start_pos || 0;
+  # In no_metadata mode, seed context with result array so all values
+  # are stored as raw data without metadata wrappers.
+  my @array;
+  push @context, \@array if $no_metadata;
 
-  # Parse the PDF objects.
-  /\G$PARSE/gc;
+  # Track match position for calculating token offsets from whitespace length.
+  my $match_start = $start_pos || 0;
+  pos = $match_start;
+
+  # Parse PDF objects in input string.
+  while (m{\G((?>$ws*))(?:                                                 # Optional whitespace  ($1)
+    (/((?:[^$ss()<>\[\]{}/%\#]+|\#(?!00)[0-9A-Fa-f]{2})*))                 # Name: /Name          ($2, $3)
+    |(\d+)$ws+(\d+)$ws+(R|obj)                                             # Indirect ref/obj     ($4, $5, $6)
+    |((?>[+-]?(?=\.?\d)\d*(\.\d*)?))                                       # Number               ($7, $8)
+    |(>>)                                                                  # End dict             ($9)
+    |(\])                                                                  # End array            ($10)
+    |(<<)                                                                  # Start dict           ($11)
+    |(\[)                                                                  # Start array          ($12)
+    |(\((?:(?>[^\\()]+)|\\.|(?-1))*\))                                     # String literal       ($13)
+    |startxref$ws+(\d+)                                                    # startxref            ($14)
+    |(endobj)                                                              # endobj               ($15)
+    |(stream)(\r?\n)((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s           # stream...endstream   ($16, $17, $18)
+    |(ID)(?s:$s(.*?)(?:\r\n|$s)?EI$s)?                                     # Inline image         ($19, $20)
+    |(xref)(?:$ws*\d+$ws+\d+$n(?:\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))*)*  # xref table           ($21)
+    |(true|false)                                                          # Boolean              ($22)
+    |(null)                                                                # Null                 ($23)
+    |([^$ss()<>\[\]{}/%]+)                                                 # Other token          ($24)
+    |<([0-9A-Fa-f$ss]*)>                                                   # Hex string           ($25)
+    |([^\r\n]+)                                                            # Parse error          ($26)
+  )}xgco) {
+    $start = $match_start + length $1;
+    $match_start = pos;
+
+    if (defined $2) {
+      # Name object: /Name
+      if (index($3, '#') >= 0 and $self->{-pdf_version} >= 1.2) {
+        my $name = $3;
+        $name =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/geo;
+        if (!@context) {
+          push @objects, { data => $2, type => "name", name => $name, offset => $start, length => pos() - $start };
+        } elsif (!ref $context[-1]) {
+          $context[-2]{$context[-1]} = $2;
+          pop @context;
+        } elsif (ref $context[-1] eq 'HASH') {
+          push @context, $name;
+        } else {
+          push @{$context[-1]}, $2;
+        }
+      } elsif (!@context) {
+        push @objects, { data => $2, type => "name", name => $3, offset => $start, length => pos() - $start };
+      } elsif (!ref $context[-1]) {
+        $context[-2]{$context[-1]} = $2;
+        pop @context;
+      } elsif (ref $context[-1] eq 'HASH') {
+        push @context, $3;
+      } else {
+        push @{$context[-1]}, $2;
+      }
+    } elsif (defined $4) {
+      # Indirect reference or indirect object
+      if ($6 eq "obj") {
+        push @objects, { data => join("-", $4, $5 || ()), type => "obj", offset => $start, length => pos() - $start };
+      } else {
+        my $id = join("-", $4, $5 || ());
+        if (my $resolved = $self->{-indirect_objects}{$id}) {
+          if (!@context) {
+            push @objects, { %{$resolved} };
+          } elsif (!ref $context[-1]) {
+            $context[-2]{$context[-1]} = $resolved->{data};
+            pop @context;
+          } elsif (ref $context[-1] eq 'HASH') {
+            croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got indirect ref!\n");
+          } else {
+            push @{$context[-1]}, $resolved->{data};
+          }
+        } else {
+          my $ref = \$id;
+          if (!@context) {
+            my $object = { data => $ref, type => "R", offset => $start, length => pos() - $start };
+            push @{$self->{-unresolved_refs}{$id}}, \$object->{data};
+            push @objects, $object;
+          } elsif (!ref $context[-1]) {
+            $context[-2]{$context[-1]} = $ref;
+            push @{$self->{-unresolved_refs}{$id}}, \$context[-2]{pop @context};
+          } elsif (ref $context[-1] eq 'HASH') {
+            croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got indirect ref!\n");
+          } else {
+            my $i = push(@{$context[-1]}, $ref) - 1;
+            push @{$self->{-unresolved_refs}{$id}}, \$context[-1][$i];
+          }
+        }
+      }
+    } elsif (defined $7) {
+      # Number (integer or real)
+      if (!@context) {
+        push @objects, { data => $7, type => ($8 ? "real" : "int"), offset => $start, length => pos() - $start };
+      } elsif (!ref $context[-1]) {
+        $context[-2]{$context[-1]} = $7;
+        pop @context;
+      } elsif (ref $context[-1] eq 'HASH') {
+        croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got number!\n");
+      } else {
+        push @{$context[-1]}, $7;
+      }
+    } elsif (defined $9) {
+      # End of dictionary: >>
+      @context and !ref $context[-1]
+        and croak join(": ", $self->file || (), "Byte offset $start: Parse error: Missing value for key \"$context[-1]\" before \">>\" token!\n");
+      @context and ref $context[-1] eq 'HASH'
+        or croak join(": ", $self->file || (), "Byte offset $start: Parse error: \">>\" token found without matching \"<<\" token!\n");
+      pop @context;
+      if (!@context) {
+        if (@objects >= 2 and ($objects[-2]{type} // "") eq "token" and $objects[-2]{data} eq "trailer") {
+          splice @objects, -2, 1;
+          $objects[-1]{type} = "trailer";
+          push @{$self->{-trailers}}, $objects[-1];
+        }
+        $objects[-1]{length} = pos() - $objects[-1]{offset};
+      }
+    } elsif (defined $10) {
+      # End of array: ]
+      (@context and ref $context[-1] eq 'ARRAY')
+        or croak join(": ", $self->file || (), "Byte offset $start: Parse error: \"]\" token found without matching \"[\" token!\n");
+      pop @context;
+      $objects[-1]{length} = pos() - $objects[-1]{offset} if !@context;
+    } elsif (defined $11) {
+      # Dictionary start: <<
+      my $dict = {};
+      if (!@context) {
+        push @objects, { data => $dict, type => "dict", offset => $start };
+      } elsif (!ref $context[-1]) {
+        $context[-2]{$context[-1]} = $dict;
+        pop @context;
+      } elsif (ref $context[-1] eq 'HASH') {
+        croak join(": ", $self->file || (), "Byte offset $start: Parse error: Expected dictionary key (name), got \"<<\"!\n");
+      } else {
+        push @{$context[-1]}, $dict;
+      }
+      push @context, $dict;
+    } elsif (defined $12) {
+      # Array start: [
+      my $array = [];
+      if (!@context) {
+        push @objects, { data => $array, type => "array", offset => $start };
+      } elsif (!ref $context[-1]) {
+        $context[-2]{$context[-1]} = $array;
+        pop @context;
+      } elsif (ref $context[-1] eq 'HASH') {
+        croak join(": ", $self->file || (), "Byte offset $start: Parse error: Expected dictionary key (name), got \"[\"!\n");
+      } else {
+        push @{$context[-1]}, $array;
+      }
+      push @context, $array;
+    } elsif (defined $13) {
+      # String literal: (...)
+      my $data = $13;
+      $data =~ s/\\$n//go  if index($data, '\\') >= 0;
+      $data =~ s/$n/\n/go  if index($data, "\r") >= 0;
+      if (!@context) {
+        push @objects, { data => $data, type => "string", offset => $start, length => pos() - $start };
+      } elsif (!ref $context[-1]) {
+        $context[-2]{$context[-1]} = $data;
+        pop @context;
+      } elsif (ref $context[-1] eq 'HASH') {
+        croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got string!\n");
+      } else {
+        push @{$context[-1]}, $data;
+      }
+    } elsif (defined $14) {
+      # startxref
+      push @objects, { data => $14, type => "startxref", offset => $start, length => pos() - $start };
+    } elsif (defined $15) {
+      # endobj
+      my ($id, $object) = splice @objects, -2;
+      ($id and ($id->{type} // "") eq "obj")
+        or croak join(": ", $self->file || (), "Byte offset $start: Invalid indirect object definition!\n");
+      $object->{id}                                      = $id->{data};
+      $self->{-indirect_objects}{$id->{data}}            = $object;
+      $self->{-indirect_objects}{offset}{$id->{offset}}  = $object;
+      push @objects, $object;
+      if (my $refs = delete $self->{-unresolved_refs}{$id->{data}}) {
+        ${$_} = $object->{data} for @{$refs};
+      }
+    } elsif (defined $16) {
+      # stream ... endstream
+      $sstart = $start + 6 + length $17;
+      my ($id, $stream) = @objects[-2,-1];
+      ($stream and ($stream->{type} // "") eq "dict")
+        or croak join(": ", $self->file || (), "Byte offset $start: Stream dictionary missing!\n");
+      $stream->{type} = "stream";
+      ($id and ($id->{type} // "") eq "obj")
+        or croak join(": ", $self->file || (), "Byte offset $start: Invalid indirect object definition!\n");
+      push @{$self->{-trailers}}, $stream if ($stream->{data}{Type} // "") eq "/XRef";
+      $_ = $_->{data} for $id, $stream;
+      my $matched_length = length $18;
+      my $length = $stream->{Length};
+      if (defined $length and !ref $length) {
+        if ($length > $matched_length) {
+          carp join(": ", $self->file || (), "Byte offset $start: Stream #$id: Declared length $length exceeds actual stream data!\n");
+          $length = $matched_length;
+        }
+      } else {
+        carp join(": ", $self->file || (), "Byte offset $start: Stream #$id: Stream length not found in metadata!\n")
+          unless defined $length;
+        $length = $matched_length;
+      }
+      $stream->{-data}    = substr($_, $sstart, $length) // "";
+      $stream->{-id}      = $id;
+      $stream->{-offset}  = $start;
+      $stream->{-length}  = $length;
+      $stream->{Length}  //= $length;
+      push @{$self->{-streams}}, $stream;
+      $self->filter_stream($stream) if $stream->{Filter};
+      $self->parse_object_stream($stream) if ($stream->{Type} // "") eq "/ObjStm";
+    } elsif (defined $19) {
+      # Inline image data: ID ... EI
+      croak join(": ", $self->file || (), "Byte offset $start: Invalid inline image data!\n") unless $20;
+      if (!@context) {
+        push @objects, { data => $20, type => "image", offset => $start, length => pos() - $start };
+      } elsif (!ref $context[-1]) {
+        $context[-2]{$context[-1]} = $20;
+        pop @context;
+      } elsif (ref $context[-1] eq 'HASH') {
+        croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got inline image!\n");
+      } else {
+        push @{$context[-1]}, $20;
+      }
+    } elsif (defined $21) {
+      # Cross-reference table: entries consumed inline by regex.
+    } elsif (defined $22) {
+      # Boolean: true or false
+      if (!@context) {
+        push @objects, { data => $22, type => "bool", bool => $22 eq "true", offset => $start, length => pos() - $start };
+      } elsif (!ref $context[-1]) {
+        $context[-2]{$context[-1]} = $22;
+        pop @context;
+      } elsif (ref $context[-1] eq 'HASH') {
+        croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got boolean!\n");
+      } else {
+        push @{$context[-1]}, $22;
+      }
+    } elsif (defined $23) {
+      # Null
+      if (!@context) {
+        push @objects, { data => $23, type => "null", offset => $start, length => pos() - $start };
+      } elsif (!ref $context[-1]) {
+        $context[-2]{$context[-1]} = $23;
+        pop @context;
+      } elsif (ref $context[-1] eq 'HASH') {
+        croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got null!\n");
+      } else {
+        push @{$context[-1]}, $23;
+      }
+    } elsif (defined $24) {
+      # Other token
+      if (!@context) {
+        push @objects, { data => $24, type => "token", offset => $start, length => pos() - $start };
+      } elsif (!ref $context[-1]) {
+        $context[-2]{$context[-1]} = $24;
+        pop @context;
+      } elsif (ref $context[-1] eq 'HASH') {
+        croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got token \"$24\"!\n");
+      } else {
+        push @{$context[-1]}, $24;
+      }
+    } elsif (defined $25) {
+      # Hexadecimal string: <...>
+      my $data = lc($25);
+      $data =~ s/$s+//go;
+      $data .= "0" if length($data) % 2 == 1;
+      $data = "<$data>";
+      if (!@context) {
+        push @objects, { data => $data, type => "hex", offset => $start, length => pos() - $start };
+      } elsif (!ref $context[-1]) {
+        $context[-2]{$context[-1]} = $data;
+        pop @context;
+      } elsif (ref $context[-1] eq 'HASH') {
+        croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got hex string!\n");
+      } else {
+        push @{$context[-1]}, $data;
+      }
+    } else {
+      # Parse error
+      croak join(": ", $self->file || (), "Byte offset $start: Parse error on input: \"$26\"\n");
+    }
+  }
 
   # Check for unclosed containers.
   croak join(": ", $self->file || (), "Parse error: Unclosed " .
-    ((ref $context[-1] || 'HASH') eq 'HASH' ? "dictionary" : "array") . "!\n") if @context;
-
-  # Return parsed PDF objects.
-  return @objects;
-}
-
-# Parse PDF objects from standalone PDF data.
-sub parse_data {
-  my ($me, $data) = @_;
-
-  # Alias local $_ variable to $data or ${$data}.
-  local $_;
-  *_ = ref($data) eq "SCALAR" ? $data : \$data;
-
-  # Localize package variables used by parser regex.
-  local($self, @objects, @context, $start, $sstart) = ($me);
-
-  # Parse objects without metadata.
-  push @context, \(my @array);
-
-  # Parse PDF objects from data.
-  /$PARSE/;
-
-  # Check for unclosed containers.
-  croak join(": ", $self->file || (), "Parse error: Unclosed " .
-    ((ref $context[-1] || 'HASH') eq 'HASH' ? "dictionary" : "array") . "!\n") if @context > 1;
+    ((ref $context[-1] || 'HASH') eq 'HASH' ? "dictionary" : "array") . "!\n")
+    if @context > ($no_metadata ? 1 : 0);
 
   # Return parsed objects.
-  return wantarray ? @array : $array[0];
+  return $no_metadata ? (wantarray ? @array : $array[0]) : @objects;
+}
+
+# Parse PDF objects from standalone PDF data (no metadata wrappers).
+sub parse_data {
+  my ($me, $data) = @_;
+  $me->parse_objects($data, 0, 1);
 }
 
 # Parse an object stream.
