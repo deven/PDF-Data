@@ -343,7 +343,7 @@ sub pdf_file_data {
   $self->validate unless $self->{-novalidate};
 
   # Array of indirect objects, with lookup hash as first element.
-  $self->{-indirect_objects} = [{}];
+  local $self->{-indirect_objects} = [{}];
 
   # Objects seen while generating the PDF file data.
   my $seen = {};
@@ -768,7 +768,7 @@ sub validate_content_stream {
   my ($self, $path, $stream) = @_;
 
   # Make sure the content stream can be parsed.
-  local($self->{-indirect_objects}) = {};
+  local $self->{-indirect_objects} = {};
   my @objects = eval { $self->parse_objects(\($stream->{-data} //= ""), 0); };
   croak join(": ", $self->file || (), "Error: $path: $@") if $@;
 
@@ -785,7 +785,7 @@ sub minify_content_stream {
   my ($self, $stream, $objects) = @_;
 
   # Parse object stream if necessary.
-  local($self->{-indirect_objects}) = {};
+  local $self->{-indirect_objects} = {};
   $objects ||= [ $self->parse_objects(\($stream->{-data} //= ""), 0) ];
 
   # Generate new content stream from objects.
