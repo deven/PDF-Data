@@ -250,7 +250,7 @@ sub parse_pdf {
     # Copy trailer dictionary entries.
     foreach my $key (keys %{$trailer}) {
       # Copy new keys, but skip keys specific to cross-reference streams.
-      $self->{$key} //= $trailer->{$key} unless $key =~ /^(?:Length|Filter|DecodeParms|F|FFilter|FDecodeParms|DL|Index|Prev|W)$/;
+      $self->{$key} //= $trailer->{$key} unless $key =~ /^(?:Type|Length|Filter|DecodeParms|F|FFilter|FDecodeParms|DL|Index|Prev|W)$/;
     }
   }
 
