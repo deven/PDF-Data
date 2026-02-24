@@ -964,7 +964,7 @@ sub parse_objects {
     (/((?:[^$ss()<>\[\]{}/%\#]+|\#(?!00)[0-9A-Fa-f]{2})*))  # Name object:                           /Name                ($2, $3)
     |(([+-]?(?=\.?\d)\d*)\.?\d*)                            # Real number:                           [+-]999.999          ($4)
                                                             # Integer:                               [+-]999              ($5)
-    (?:$ws+(\d)$ws+(?:(R)|(obj)))?                          # Indirect reference:                    999 0 R              ($5, $6, $7)
+    (?:$ws+(\d+)$ws+(?:(R)|(obj)))?                         # Indirect reference:                    999 0 R              ($5, $6, $7)
                                                             # Indirect object:                       999 0 obj            ($5, $6, $8)
     |(>>|\])                                                # End of dictionary/array:               >> or ]              ($9)
     |(<<)                                                   # Dictionary:                            <<...>>              ($10)
