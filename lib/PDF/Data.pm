@@ -1653,8 +1653,8 @@ sub enumerate_indirect_objects {
 
         # Check each hash key.
         foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
-          if (($object->{Type} // "") eq "/ExtGState" and $key eq "Font" and is_array $object->{Font} and is_hash $object->{Font}{data}) {
-            push @objects, $object->{Font}{data};
+          if (($object->{Type} // "") eq "/ExtGState" and $key eq "Font" and is_array $object->{Font} and is_hash $object->{Font}[0]) {
+            push @objects, $object->{Font}[0];
           } elsif ($key =~ /^(?:Data|First|ID|Last|Next|Obj|Parent|ParentTree|Popup|Prev|Root|StmOwn|Threads|Widths)$/
               or $key =~ /^(?:AN|Annotation|B|C|CI|DocMDP|F|FontDescriptor|I|IX|K|Lock|N|P|Pg|RI|SE|SV|V)$/ and ref $object->{$key} and is_hash $object->{$key}
               or is_hash $object->{$key} and ($object->{$key}{-data} or $object->{$key}{Kids} or ($object->{$key}{Type} // "") =~ /^\/(?:Filespec|Font)$/)
