@@ -1001,252 +1001,12 @@ sub parse_objects {
   pos = $start_pos || 0;
 
   # ===================================================================
-  # Dispatch closures — only for marked (special-processing) tokens.
-  # ===================================================================
-  my @dispatch;
-
-  # Mark 1: Name containing # (hex decode needed).
-  # The regex captures the full name permissively; we validate here.
-  $dispatch[1] = sub {
-    my $name = $2;
-    $name =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/ge;
-    croak join(": ", $self->file || (),
-      "Byte offset " . (pos() - length $name) .
-      ": Invalid hex escape in name \"$2\"!\n")
-      if index($name, '#') >= 0 || index($name, "\x00") >= 0;
-    push @{$objects}, $name;
-  };
-
-  # Mark 2: R (indirect reference).
-  $dispatch[2] = sub {
-    my $id = $4 ? "$3-$4" : $3;
-    if (my $resolved = $self->{-indirect_objects}{$id}) {
-      push @{$objects}, $resolved->{data};
-    } else {
-      push @{$objects}, \$id;
-      push @{$self->{-unresolved_refs}{$id}}, \$objects->[-1];
-    }
-  };
-
-  # Mark 3: obj (indirect object definition).
-  $dispatch[3] = sub {
-    $obj_id     = $4 ? "$3-$4" : $3;
-    $obj_offset = pos() - length($2);
-  };
-
-  # Mark 4: >> (close dictionary).
-  $dispatch[4] = sub {
-    my $pairs = $objects;
-    $objects = pop @stack;
-
-    # Validate even element count (complete key-value pairs).
-    croak join(": ", $self->file || (),
-      "Byte offset " . pos() .
-      ": Odd number of elements in dictionary!\n")
-      if @{$pairs} % 2;
-
-    # Single pass: strip leading / from keys, insert into dict,
-    # and re-register any unresolved forward refs.
-    my $dict = $objects->[-1];
-    for (my $i = 0; $i < @{$pairs}; $i += 2) {
-      my $key = $pairs->[$i];
-      my $val = $pairs->[$i+1];
-      substr($key, 0, 1, "") eq "/"
-        or croak join(": ", $self->file || (),
-          "Byte offset " . pos() .
-          ": Expected name for dictionary key, got \"/$key\"!\n");
-      $dict->{$key} = $val;
-      if (ref $val eq 'SCALAR') {
-        push @{$self->{-unresolved_refs}{${$val}}},
-          \$dict->{$key};
-      }
-    }
-
-    # Handle trailer hook.
-    if ($trailer_offset) {
-      $objects->[-1]{-offset} = $trailer_offset;
-      push @{$self->{-trailers}}, $objects->[-1];
-      undef $trailer_offset;
-    }
-  };
-
-  # Mark 5: ] (close array).
-  # The arrayref is already in the parent (pushed by [); $objects was
-  # set to that same arrayref, so elements accumulated directly in it.
-  $dispatch[5] = sub {
-    $objects = pop @stack
-      // croak join(": ", $self->file || (),
-        "Byte offset " . pos() . ": \"]\" without matching \"[\"!\n");
-  };
-
-  # Mark 6: << (open dictionary).
-  $dispatch[6] = sub {
-    push @{$objects}, {};
-    push @stack, $objects;
-    $objects = [];           # temp flat list for key-value pairs
-  };
-
-  # Mark 7: [ (open array).
-  $dispatch[7] = sub {
-    my $arr = [];
-    push @{$objects}, $arr;  # parent holds the reference
-    push @stack, $objects;
-    $objects = $arr;          # collect elements directly into it
-  };
-
-  # Mark 8: Dirty string (contains backslash escapes or nested parens).
-  $dispatch[8] = sub {
-    my $v = $2;
-    $v =~ s/\\$n//go;
-    $v =~ s/$n/\n/go;
-    push @{$objects}, $v;
-  };
-
-  # Mark 9: startxref.
-  $dispatch[9] = sub {
-    $self->{-startxref} = $2;
-  };
-
-  # Mark 10: endobj.
-  $dispatch[10] = sub {
-    if (defined $obj_id) {
-      my $obj_value = pop @{$objects};
-      my $object = { data => $obj_value, id => $obj_id };
-      $self->{-indirect_objects}{$obj_id}            = $object;
-      $self->{-indirect_objects}{offset}{$obj_offset} = $object;
-
-      # If the object value is itself an unresolved forward ref,
-      # re-register with its hash-slot location (the pop copied it).
-      if (ref $obj_value eq 'SCALAR') {
-        push @{$self->{-unresolved_refs}{${$obj_value}}}, \$object->{data};
-      }
-
-      if (my $refs = delete $self->{-unresolved_refs}{$obj_id}) {
-        ${$_} = $obj_value for @{$refs};
-      }
-      undef $obj_id;
-    } else {
-      croak join(": ", $self->file || (),
-        "Byte offset " . pos() . ": endobj without matching obj!\n");
-    }
-  };
-
-  # Mark 11: stream.
-  # Matched bare "stream" keyword.  pos() is right after it.
-  # We skip the newline, find endstream via index(), extract data
-  # with substr(), and advance pos() manually.
-  $dispatch[11] = sub {
-    defined $obj_id
-      or croak join(": ", $self->file || (),
-        "Byte offset " . pos() . ": stream without obj!\n");
-
-    my $stream = $objects->[-1];
-    (ref $stream eq 'HASH')
-      or croak join(": ", $self->file || (),
-        "Byte offset " . pos() . ": Stream dictionary missing!\n");
-
-    push @{$self->{-trailers}}, $stream
-      if ($stream->{Type} // "") eq "/XRef";
-
-    my $stream_offset = pos() - 6;
-
-    # Skip newline after "stream" (CR, LF, or CRLF).
-    my $sstart = pos();
-    my $ch = substr($_, $sstart, 1);
-    if ($ch eq "\r") {
-      $sstart++;
-      $sstart++ if substr($_, $sstart, 1) eq "\n";
-    } elsif ($ch eq "\n") {
-      $sstart++;
-    }
-
-    # Find "endstream" — trust Length if available, fall back to scanning.
-    my $length = $stream->{Length};
-    my $end_pos;
-    if (defined $length and !ref $length) {
-      $end_pos = index($_, "endstream", $sstart + $length);
-      if ($end_pos < 0 || $end_pos > $sstart + $length + 2) {
-        # Length was wrong; scan from the start.
-        $end_pos = index($_, "endstream", $sstart);
-      }
-    } else {
-      carp join(": ", $self->file || (),
-        "Stream #$obj_id:",
-        " Stream length not found in metadata!\n")
-        unless defined $length;
-      $end_pos = index($_, "endstream", $sstart);
-    }
-
-    croak join(": ", $self->file || (),
-      "Byte offset $stream_offset: Stream #$obj_id:",
-      " endstream not found!\n")
-      if $end_pos < 0;
-
-    my $matched_length = $end_pos - $sstart;
-    if (defined $length and !ref $length) {
-      if ($length > $matched_length) {
-        carp join(": ", $self->file || (),
-          "Stream #$obj_id:",
-          " Declared length $length exceeds actual stream data!\n");
-        $length = $matched_length;
-      }
-    } else {
-      $length = $matched_length;
-    }
-
-    $stream->{-data}    = substr($_, $sstart, $length);
-    $stream->{-id}      = $obj_id;
-    $stream->{-offset}  = $stream_offset;
-    $stream->{-length}  = $length;
-    $stream->{Length}  //= $length;
-
-    push @{$self->{-streams}}, $stream;
-
-    # Advance pos() past "endstream" (9 bytes) + whitespace.
-    pos = $end_pos + 9;
-    pos = pos() + 1 if substr($_, pos(), 1) =~ /\A[$ss]/;
-
-    $self->filter_stream($stream) if $stream->{Filter};
-    $self->parse_object_stream($stream)
-      if ($stream->{Type} // "") eq "/ObjStm";
-  };
-
-  # Mark 12: Inline image (ID ... EI).
-  $dispatch[12] = sub {
-    croak join(": ", $self->file || (),
-      "Byte offset " . pos() . ": Invalid inline image data!\n")
-      unless defined $2;
-    push @{$objects}, { -image => $2 };
-  };
-
-  # Mark 13: xref (table consumed by regex, no-op).
-  $dispatch[13] = sub { };
-
-  # Mark 14: trailer (sets hook for next >> to register as trailer dict).
-  $dispatch[14] = sub {
-    $trailer_offset = pos() - 7;
-  };
-
-  # Mark 15: Hex string (normalize whitespace and padding).
-  $dispatch[15] = sub {
-    my $v = lc($2);
-    $v =~ s/$s+//go;
-    $v .= "0" if length($v) % 2 == 1;
-    push @{$objects}, "<$v>";
-  };
-
-  # Mark 16: Parse error (catch-all).
-  $dispatch[16] = sub {
-    croak join(": ", $self->file || (),
-      "Byte offset " . pos() . ": Parse error on input: \"$2\"\n");
-  };
-
-  # ===================================================================
   # Main parser loop.
   #
   # (*MARK:0) resets $REGMARK to "0" (falsy) at the start of each match.
   # Unmarked alternatives go through the hot path (bare push).
-  # Marked alternatives go through dispatch for special processing.
+  # Marked alternatives are handled by inlined if/elsif, ordered by
+  # frequency (most common marks first) to minimize branch cost.
   #
   # Branch reset (?|...) ensures $2 is always the primary token value
   # for all alternatives, enabling the uniform hot path.
@@ -1274,9 +1034,200 @@ sub parse_objects {
      |([^\r\n]+)(*:16)
   )}xgco) {
     unless ($REGMARK) {
+      # -----------------------------------------------------------
+      # Hot path: plain token (name, number, clean string, boolean,
+      # null, generic token).  ~69% of all tokens.
+      # -----------------------------------------------------------
       push @{$objects}, $2;
-    } else {
-      $dispatch[$REGMARK]->();
+    }
+    elsif ($REGMARK == 2) {
+      # R — indirect reference (975,037 calls).
+      my $id = $4 ? "$3-$4" : $3;
+      if (my $resolved = $self->{-indirect_objects}{$id}) {
+        push @{$objects}, $resolved->{data};
+      } else {
+        push @{$objects}, \$id;
+        push @{$self->{-unresolved_refs}{$id}}, \$objects->[-1];
+      }
+    }
+    elsif ($REGMARK == 4) {
+      # >> — close dictionary (397,964 calls).
+      my $pairs = $objects;
+      $objects = pop @stack;
+      croak join(": ", $self->file || (),
+        "Byte offset " . pos() .
+        ": Odd number of elements in dictionary!\n")
+        if @{$pairs} % 2;
+      my $dict = $objects->[-1];
+      for (my $i = 0; $i < @{$pairs}; $i += 2) {
+        my $key = $pairs->[$i];
+        my $val = $pairs->[$i+1];
+        substr($key, 0, 1, "") eq "/"
+          or croak join(": ", $self->file || (),
+            "Byte offset " . pos() .
+            ": Expected name for dictionary key, got \"/$key\"!\n");
+        $dict->{$key} = $val;
+        if (ref $val eq 'SCALAR') {
+          push @{$self->{-unresolved_refs}{${$val}}},
+            \$dict->{$key};
+        }
+      }
+      if ($trailer_offset) {
+        $dict->{-offset} = $trailer_offset;
+        push @{$self->{-trailers}}, $dict;
+        undef $trailer_offset;
+      }
+    }
+    elsif ($REGMARK == 6) {
+      # << — open dictionary (397,964 calls).
+      push @{$objects}, {};
+      push @stack, $objects;
+      $objects = [];
+    }
+    elsif ($REGMARK == 5) {
+      # ] — close array (184,562 calls).
+      $objects = pop @stack
+        // croak join(": ", $self->file || (),
+          "Byte offset " . pos() . ": \"]\" without matching \"[\"!\n");
+    }
+    elsif ($REGMARK == 7) {
+      # [ — open array (184,562 calls).
+      my $arr = [];
+      push @{$objects}, $arr;
+      push @stack, $objects;
+      $objects = $arr;
+    }
+    elsif ($REGMARK == 10) {
+      # endobj — register indirect object (110,776 calls).
+      if (defined $obj_id) {
+        my $obj_value = pop @{$objects};
+        my $object = { data => $obj_value, id => $obj_id };
+        $self->{-indirect_objects}{$obj_id}            = $object;
+        $self->{-indirect_objects}{offset}{$obj_offset} = $object;
+        if (ref $obj_value eq 'SCALAR') {
+          push @{$self->{-unresolved_refs}{${$obj_value}}}, \$object->{data};
+        }
+        if (my $refs = delete $self->{-unresolved_refs}{$obj_id}) {
+          ${$_} = $obj_value for @{$refs};
+        }
+        undef $obj_id;
+      } else {
+        croak join(": ", $self->file || (),
+          "Byte offset " . pos() . ": endobj without matching obj!\n");
+      }
+    }
+    elsif ($REGMARK == 3) {
+      # obj — indirect object definition (110,776 calls).
+      $obj_id     = $4 ? "$3-$4" : $3;
+      $obj_offset = pos() - length($2);
+    }
+    elsif ($REGMARK == 1) {
+      # Name containing # — hex decode (14,281 calls).
+      my $name = $2;
+      $name =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/ge;
+      croak join(": ", $self->file || (),
+        "Byte offset " . (pos() - length $name) .
+        ": Invalid hex escape in name \"$2\"!\n")
+        if index($name, '#') >= 0 || index($name, "\x00") >= 0;
+      push @{$objects}, $name;
+    }
+    elsif ($REGMARK == 11) {
+      # stream — extract body via index/substr, advance pos() manually (4,260 calls).
+      defined $obj_id
+        or croak join(": ", $self->file || (),
+          "Byte offset " . pos() . ": stream without obj!\n");
+      my $stream = $objects->[-1];
+      (ref $stream eq 'HASH')
+        or croak join(": ", $self->file || (),
+          "Byte offset " . pos() . ": Stream dictionary missing!\n");
+      push @{$self->{-trailers}}, $stream
+        if ($stream->{Type} // "") eq "/XRef";
+      my $stream_offset = pos() - 6;
+      my $sstart = pos();
+      my $ch = substr($_, $sstart, 1);
+      if ($ch eq "\r") {
+        $sstart++;
+        $sstart++ if substr($_, $sstart, 1) eq "\n";
+      } elsif ($ch eq "\n") {
+        $sstart++;
+      }
+      my $length = $stream->{Length};
+      my $end_pos;
+      if (defined $length and !ref $length) {
+        $end_pos = index($_, "endstream", $sstart + $length);
+        if ($end_pos < 0 || $end_pos > $sstart + $length + 2) {
+          $end_pos = index($_, "endstream", $sstart);
+        }
+      } else {
+        carp join(": ", $self->file || (),
+          "Stream #$obj_id:",
+          " Stream length not found in metadata!\n")
+          unless defined $length;
+        $end_pos = index($_, "endstream", $sstart);
+      }
+      croak join(": ", $self->file || (),
+        "Byte offset $stream_offset: Stream #$obj_id:",
+        " endstream not found!\n")
+        if $end_pos < 0;
+      my $matched_length = $end_pos - $sstart;
+      if (defined $length and !ref $length) {
+        if ($length > $matched_length) {
+          carp join(": ", $self->file || (),
+            "Stream #$obj_id:",
+            " Declared length $length exceeds actual stream data!\n");
+          $length = $matched_length;
+        }
+      } else {
+        $length = $matched_length;
+      }
+      $stream->{-data}    = substr($_, $sstart, $length);
+      $stream->{-id}      = $obj_id;
+      $stream->{-offset}  = $stream_offset;
+      $stream->{-length}  = $length;
+      $stream->{Length}  //= $length;
+      push @{$self->{-streams}}, $stream;
+      pos = $end_pos + 9;
+      pos = pos() + 1 if substr($_, pos(), 1) =~ /\A[$ss]/;
+      $self->filter_stream($stream) if $stream->{Filter};
+      $self->parse_object_stream($stream)
+        if ($stream->{Type} // "") eq "/ObjStm";
+    }
+    elsif ($REGMARK == 8) {
+      # Dirty string — escape processing (4,038 calls).
+      my $v = $2;
+      $v =~ s/\\$n//go;
+      $v =~ s/$n/\n/go;
+      push @{$objects}, $v;
+    }
+    elsif ($REGMARK == 9) {
+      # startxref (2 calls).
+      $self->{-startxref} = $2;
+    }
+    elsif ($REGMARK == 14) {
+      # trailer (2 calls).
+      $trailer_offset = pos() - 7;
+    }
+    elsif ($REGMARK == 15) {
+      # Hex string (2 calls).
+      my $v = lc($2);
+      $v =~ s/$s+//go;
+      $v .= "0" if length($v) % 2 == 1;
+      push @{$objects}, "<$v>";
+    }
+    elsif ($REGMARK == 12) {
+      # ID — inline image (0 calls in test file).
+      croak join(": ", $self->file || (),
+        "Byte offset " . pos() . ": Invalid inline image data!\n")
+        unless defined $2;
+      push @{$objects}, { -image => $2 };
+    }
+    elsif ($REGMARK == 13) {
+      # xref — no-op, consumed by regex.
+    }
+    elsif ($REGMARK == 16) {
+      # Parse error (catch-all).
+      croak join(": ", $self->file || (),
+        "Byte offset " . pos() . ": Parse error on input: \"$2\"\n");
     }
   }
 
