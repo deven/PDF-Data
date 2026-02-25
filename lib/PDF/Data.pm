@@ -990,7 +990,6 @@ sub parse_objects {
   my $self = $me;
   my ($obj_id, $obj_offset);
   my $trailer_offset;
-  my $sstart;               # Stream body start, set by (?{}) in regex.
 
   # Object collection.  $objects is swapped to point at new containers
   # during nested dict/array parsing; @stack saves/restores the parent.
@@ -1137,9 +1136,9 @@ sub parse_objects {
   };
 
   # Mark 11: stream.
-  # $sstart was set by (?{}) to pos() right after "stream" + newline.
-  # pos() is now past "endstream" + one whitespace char.
-  # The body was not captured — we extract via substr using $sstart.
+  # Matched bare "stream" keyword.  pos() is right after it.
+  # We skip the newline, find endstream via index(), extract data
+  # with substr(), and advance pos() manually.
   $dispatch[11] = sub {
     defined $obj_id
       or croak join(": ", $self->file || (),
@@ -1153,13 +1152,41 @@ sub parse_objects {
     push @{$self->{-trailers}}, $stream
       if ($stream->{Type} // "") eq "/XRef";
 
-    # Stream keyword offset: walk back from $sstart past newline + "stream".
-    my $stream_offset = (substr($_, $sstart - 2, 2) eq "\r\n")
-      ? $sstart - 8 : $sstart - 7;
+    my $stream_offset = pos() - 6;
 
-    # Body ends 10 bytes before pos(): 9 for "endstream" + 1 whitespace.
-    my $matched_length = pos() - 10 - $sstart;
+    # Skip newline after "stream" (CR, LF, or CRLF).
+    my $sstart = pos();
+    my $ch = substr($_, $sstart, 1);
+    if ($ch eq "\r") {
+      $sstart++;
+      $sstart++ if substr($_, $sstart, 1) eq "\n";
+    } elsif ($ch eq "\n") {
+      $sstart++;
+    }
+
+    # Find "endstream" — trust Length if available, fall back to scanning.
     my $length = $stream->{Length};
+    my $end_pos;
+    if (defined $length and !ref $length) {
+      $end_pos = index($_, "endstream", $sstart + $length);
+      if ($end_pos < 0 || $end_pos > $sstart + $length + 2) {
+        # Length was wrong; scan from the start.
+        $end_pos = index($_, "endstream", $sstart);
+      }
+    } else {
+      carp join(": ", $self->file || (),
+        "Stream #$obj_id:",
+        " Stream length not found in metadata!\n")
+        unless defined $length;
+      $end_pos = index($_, "endstream", $sstart);
+    }
+
+    croak join(": ", $self->file || (),
+      "Byte offset $stream_offset: Stream #$obj_id:",
+      " endstream not found!\n")
+      if $end_pos < 0;
+
+    my $matched_length = $end_pos - $sstart;
     if (defined $length and !ref $length) {
       if ($length > $matched_length) {
         carp join(": ", $self->file || (),
@@ -1168,10 +1195,6 @@ sub parse_objects {
         $length = $matched_length;
       }
     } else {
-      carp join(": ", $self->file || (),
-        "Stream #$obj_id:",
-        " Stream length not found in metadata!\n")
-        unless defined $length;
       $length = $matched_length;
     }
 
@@ -1182,6 +1205,10 @@ sub parse_objects {
     $stream->{Length}  //= $length;
 
     push @{$self->{-streams}}, $stream;
+
+    # Advance pos() past "endstream" (9 bytes) + whitespace.
+    pos = $end_pos + 9;
+    pos = pos() + 1 if substr($_, pos(), 1) =~ /\A[$ss]/;
 
     $self->filter_stream($stream) if $stream->{Filter};
     $self->parse_object_stream($stream)
@@ -1240,7 +1267,7 @@ sub parse_objects {
      |(\((?:(?>[^\\()]+)|\\.|(?-1))*\))(*:8)
      |startxref$ws+(\d+)(*:9)
      |endobj(*:10)
-     |stream$n(?{ $sstart = pos() })(?>[^e]+|(?!endstream$s)e)*endstream$s(*:11)
+     |stream(*:11)
      |ID(?s:$s(.*?)(?:\r\n|$s)?EI$s)?(*:12)
      |xref(?:$ws*\d+$ws+\d+$n(?:\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))*)*(*:13)
      |(true|false)
