@@ -936,44 +936,46 @@ sub get_hash_node {
 
 # Closure-based parse_objects redesign.
 # All closures pre-built once.  Container nesting via explicit stacks.
+# Whitespace consumed as non-dispatched prefix; $token_start computed
+# lazily only by closures that need it.
 #
 # (*MARK) dispatch indices:
 #
-# Static (0-5) — same in every dispatch array:
+# Static (0-4) — same in every dispatch array:
 #  0 = parse error
-#  1 = whitespace (no-op)
-#  2 = obj
-#  3 = startxref
-#  4 = xref
-#  5 = trailer
+#  1 = obj
+#  2 = startxref
+#  3 = xref
+#  4 = trailer
 #
-# Dynamic (6-22) — vary per context:
-#  6 = plain name       14 = other token
-#  7 = hex-encoded name 15 = hex string
-#  8 = R                16 = inline image
-#  9 = number           17 = store_dict  (<<)
-# 10 = clean string     18 = store_array ([)
-# 11 = dirty string     19 = close_dict  (>>)
-# 12 = boolean          20 = close_array (])
-# 13 = null             21 = endobj
-#                       22 = stream
+# Dynamic (5-21) — vary per context:
+#  5 = plain name       13 = other token
+#  6 = hex-encoded name 14 = hex string
+#  7 = R                15 = inline image
+#  8 = number           16 = store_dict  (<<)
+#  9 = clean string     17 = store_array ([)
+# 10 = dirty string     18 = close_dict  (>>)
+# 11 = boolean          19 = close_array (])
+# 12 = null             20 = endobj
+#                       21 = stream
 #
-# Capture variables:
-#  $1  = /Name token (with /)
-#  $2  = Name (without /)
-#  $3  = object number
-#  $4  = generation number
-#  $5  = number value
-#  $6  = clean string (no parens/backslash/CR/LF)
-#  $7  = dirty string (nested parens/escapes/newlines)
-#  $8  = startxref offset
-#  $9  = stream newline (\r?\n)
-#  $10 = stream data
-#  $11 = inline image data
-#  $12 = boolean (true|false)
-#  $13 = other token
-#  $14 = hex string content
-#  $15 = parse error text
+# Capture variables ($1 = whitespace prefix, rest shifted by 1):
+#  $1  = leading whitespace
+#  $2  = /Name token (with /)
+#  $3  = Name (without /)
+#  $4  = object number
+#  $5  = generation number
+#  $6  = number value
+#  $7  = clean string (no parens/backslash/CR/LF)
+#  $8  = dirty string (nested parens/escapes/newlines)
+#  $9  = startxref offset
+#  $10 = stream newline (\r?\n)
+#  $11 = stream data
+#  $12 = inline image data
+#  $13 = boolean (true|false)
+#  $14 = other token
+#  $15 = hex string content
+#  $16 = parse error text
 
 sub parse_objects {
   my ($me, $data, $start_pos) = @_;
@@ -986,7 +988,7 @@ sub parse_objects {
 
   # Parser state — shared lexicals for all closures.
   my $self = $me;
-  my ($key, $dict, $array, $token_start, $token_end);
+  my ($key, $dict, $array);
   my ($obj_id, $obj_offset, $obj_value, $prev_obj_dispatch);
   my $dispatch;
   my @objects;
@@ -994,54 +996,56 @@ sub parse_objects {
   # Container nesting stacks.
   my (@dispatch_stack, @dict_stack, @array_stack);
 
-  $token_end = $start_pos || 0;
-  pos = $token_end;
-
-  # ===================================================================
-  # Forward declarations.
-  # ===================================================================
-  my ($key_mode, $val_mode, $arr_mode, $obj_mode, $top_dispatch);
+  # Match position tracking.  $match_start is pos after the previous
+  # match.  Closures needing byte offset compute: $match_start + length $1.
+  my $match_start = $start_pos || 0;
+  pos = $match_start;
 
   # ===================================================================
   # Error support.
   # ===================================================================
   my @mark_type;
-  $mark_type[8]  = "indirect ref";
-  $mark_type[9]  = "number";
+  $mark_type[7]  = "indirect ref";
+  $mark_type[8]  = "number";
+  $mark_type[9]  = "string";
   $mark_type[10] = "string";
-  $mark_type[11] = "string";
-  $mark_type[12] = "boolean";
-  $mark_type[13] = "null";
-  $mark_type[14] = "token";
-  $mark_type[15] = "hex string";
-  $mark_type[16] = "inline image";
-  $mark_type[17] = "<<";
-  $mark_type[18] = "[";
+  $mark_type[11] = "boolean";
+  $mark_type[12] = "null";
+  $mark_type[13] = "token";
+  $mark_type[14] = "hex string";
+  $mark_type[15] = "inline image";
+  $mark_type[16] = "<<";
+  $mark_type[17] = "[";
 
   my $key_error = sub {
+    my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
-      "Byte offset $token_start: Expected dictionary key (name), got " .
+      "Byte offset $start: Expected dictionary key (name), got " .
       ($mark_type[$REGMARK] // "value") . "!\n");
   };
 
   my $error_close_dict = sub {
+    my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
-      "Byte offset $token_start: \">>\" without matching \"<<\"!\n");
+      "Byte offset $start: \">>\" without matching \"<<\"!\n");
   };
 
   my $error_close_array = sub {
+    my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
-      "Byte offset $token_start: \"]\" without matching \"[\"!\n");
+      "Byte offset $start: \"]\" without matching \"[\"!\n");
   };
 
   my $error_endobj = sub {
+    my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
-      "Byte offset $token_start: endobj without matching obj!\n");
+      "Byte offset $start: endobj without matching obj!\n");
   };
 
   my $error_stream = sub {
+    my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
-      "Byte offset $token_start: stream without obj!\n");
+      "Byte offset $start: stream without obj!\n");
   };
 
   # ===================================================================
@@ -1057,33 +1061,36 @@ sub parse_objects {
   };
 
   # ===================================================================
-  # Static closures (indices 0-5).
+  # Forward declarations.
+  # ===================================================================
+  my ($key_mode, $val_mode, $arr_mode, $top_dispatch, $obj_mode);
+
+  # ===================================================================
+  # Static closures (indices 0-4).
   # ===================================================================
   my $parse_error = sub {
+    my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
-      "Byte offset $token_start: Parse error on input: \"$15\"\n");
+      "Byte offset $start: Parse error on input: \"$16\"\n");
   };
 
-  my $skip_ws = sub { };
-
   my $handle_obj = sub {
-    $obj_id     = join("-", $3, $4 || ());
-    $obj_offset = $token_start;
+    $obj_id     = join("-", $4, $5 || ());
+    $obj_offset = $match_start + length $1;
     $prev_obj_dispatch = $dispatch;
     $dispatch = $obj_mode;
   };
 
-  my $handle_startxref = sub { $self->{-startxref} = $8 };
+  my $handle_startxref = sub { $self->{-startxref} = $9 };
 
   my $handle_xref = sub { };
 
-  # Trailer: one-shot hook on store_dict (slot 17).
-  # Creates one closure per trailer keyword (1-2 per file, negligible).
+  # Trailer: one-shot hook on store_dict (slot 16).
   my $handle_trailer = sub {
-    my $saved_start = $token_start;
-    my $orig = $dispatch->[17];
-    $dispatch->[17] = sub {
-      $dispatch->[17] = $orig;
+    my $saved_start = $match_start + length $1;
+    my $orig = $dispatch->[16];
+    $dispatch->[16] = sub {
+      $dispatch->[16] = $orig;
       &$orig;
       $objects[-1]{-offset} = $saved_start;
       push @{$self->{-trailers}}, $objects[-1];
@@ -1092,15 +1099,14 @@ sub parse_objects {
 
   my @static = (
     $parse_error,       # 0
-    $skip_ws,           # 1
-    $handle_obj,        # 2
-    $handle_startxref,  # 3
-    $handle_xref,       # 4
-    $handle_trailer,    # 5
+    $handle_obj,        # 1
+    $handle_startxref,  # 2
+    $handle_xref,       # 3
+    $handle_trailer,    # 4
   );
 
   # ===================================================================
-  # Shared close closures.
+  # Close closures.
   # ===================================================================
   my $close_dict = sub {
     $dict = pop @dict_stack;
@@ -1113,38 +1119,38 @@ sub parse_objects {
   };
 
   # ===================================================================
-  # Dict key-mode closures (index 6-22).
-  # Only name tokens are valid; everything else is an error.
+  # Dict key-mode closures (index 5-21).
   # ===================================================================
   my $key_plain_name = sub {
-    $key = $2;
+    $key = $3;
     $dispatch = $val_mode;
   };
 
   my $key_hex_name = sub {
-    $key = $2;
+    $key = $3;
     $key =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/geo;
     $dispatch = $val_mode;
   };
 
   my $key_missing_value = sub {
+    my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
-      "Byte offset $token_start: Missing value for key",
+      "Byte offset $start: Missing value for key",
       " \"$key\" before \">>\"!\n");
   };
 
   # ===================================================================
-  # Dict val-mode closures (index 6-22).
+  # Dict val-mode closures (index 5-21).
   # ===================================================================
-  my $val_name  = sub { $dict->{$key} = $1;  $dispatch = $key_mode };
-  my $val_num   = sub { $dict->{$key} = $5;  $dispatch = $key_mode };
-  my $val_cstr  = sub { $dict->{$key} = $6;  $dispatch = $key_mode };
-  my $val_bool  = sub { $dict->{$key} = $12; $dispatch = $key_mode };
+  my $val_name  = sub { $dict->{$key} = $2;    $dispatch = $key_mode };
+  my $val_num   = sub { $dict->{$key} = $6;    $dispatch = $key_mode };
+  my $val_cstr  = sub { $dict->{$key} = $7;    $dispatch = $key_mode };
+  my $val_bool  = sub { $dict->{$key} = $13;   $dispatch = $key_mode };
   my $val_null  = sub { $dict->{$key} = "null"; $dispatch = $key_mode };
-  my $val_token = sub { $dict->{$key} = $13; $dispatch = $key_mode };
+  my $val_token = sub { $dict->{$key} = $14;   $dispatch = $key_mode };
 
   my $val_dstr = sub {
-    my $v = $7;
+    my $v = $8;
     $v =~ s/\\$n//go;
     $v =~ s/$n/\n/go;
     $dict->{$key} = $v;
@@ -1152,7 +1158,7 @@ sub parse_objects {
   };
 
   my $val_hex = sub {
-    my $v = lc($14);
+    my $v = lc($15);
     $v =~ s/$s+//go;
     $v .= "0" if length($v) % 2 == 1;
     $dict->{$key} = "<$v>";
@@ -1160,15 +1166,16 @@ sub parse_objects {
   };
 
   my $val_image = sub {
+    my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
-      "Byte offset $token_start: Invalid inline image data!\n")
-      unless $11;
-    $dict->{$key} = { -image => $11 };
+      "Byte offset $start: Invalid inline image data!\n")
+      unless $12;
+    $dict->{$key} = { -image => $12 };
     $dispatch = $key_mode;
   };
 
   my $val_ref = sub {
-    my $id = join("-", $3, $4 || ());
+    my $id = join("-", $4, $5 || ());
     if (my $resolved = $self->{-indirect_objects}{$id}) {
       $dict->{$key} = $resolved->{data};
     } else {
@@ -1197,38 +1204,39 @@ sub parse_objects {
   };
 
   # ===================================================================
-  # Array-mode closures (index 6-22).
+  # Array-mode closures (index 5-21).
   # ===================================================================
-  my $arr_name  = sub { push @$array, $1 };
-  my $arr_num   = sub { push @$array, $5 };
-  my $arr_cstr  = sub { push @$array, $6 };
-  my $arr_bool  = sub { push @$array, $12 };
+  my $arr_name  = sub { push @$array, $2 };
+  my $arr_num   = sub { push @$array, $6 };
+  my $arr_cstr  = sub { push @$array, $7 };
+  my $arr_bool  = sub { push @$array, $13 };
   my $arr_null  = sub { push @$array, "null" };
-  my $arr_token = sub { push @$array, $13 };
+  my $arr_token = sub { push @$array, $14 };
 
   my $arr_dstr = sub {
-    my $v = $7;
+    my $v = $8;
     $v =~ s/\\$n//go;
     $v =~ s/$n/\n/go;
     push @$array, $v;
   };
 
   my $arr_hex = sub {
-    my $v = lc($14);
+    my $v = lc($15);
     $v =~ s/$s+//go;
     $v .= "0" if length($v) % 2 == 1;
     push @$array, "<$v>";
   };
 
   my $arr_image = sub {
+    my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
-      "Byte offset $token_start: Invalid inline image data!\n")
-      unless $11;
-    push @$array, { -image => $11 };
+      "Byte offset $start: Invalid inline image data!\n")
+      unless $12;
+    push @$array, { -image => $12 };
   };
 
   my $arr_ref = sub {
-    my $id = join("-", $3, $4 || ());
+    my $id = join("-", $4, $5 || ());
     if (my $resolved = $self->{-indirect_objects}{$id}) {
       push @$array, $resolved->{data};
     } else {
@@ -1256,18 +1264,17 @@ sub parse_objects {
   };
 
   # ===================================================================
-  # Obj-mode closures (index 6-22).
-  # Every store registers the indirect object immediately.
+  # Obj-mode closures (index 5-21).
   # ===================================================================
-  my $obj_name = sub { $obj_value = $1; &$obj_register };
-  my $obj_num  = sub { $obj_value = $5; &$obj_register };
-  my $obj_cstr = sub { $obj_value = $6; &$obj_register };
-  my $obj_bool = sub { $obj_value = $12; &$obj_register };
+  my $obj_name = sub { $obj_value = $2; &$obj_register };
+  my $obj_num  = sub { $obj_value = $6; &$obj_register };
+  my $obj_cstr = sub { $obj_value = $7; &$obj_register };
+  my $obj_bool = sub { $obj_value = $13; &$obj_register };
   my $obj_null = sub { $obj_value = "null"; &$obj_register };
-  my $obj_tok  = sub { $obj_value = $13; &$obj_register };
+  my $obj_tok  = sub { $obj_value = $14; &$obj_register };
 
   my $obj_dstr = sub {
-    my $v = $7;
+    my $v = $8;
     $v =~ s/\\$n//go;
     $v =~ s/$n/\n/go;
     $obj_value = $v;
@@ -1275,7 +1282,7 @@ sub parse_objects {
   };
 
   my $obj_hex = sub {
-    my $v = lc($14);
+    my $v = lc($15);
     $v =~ s/$s+//go;
     $v .= "0" if length($v) % 2 == 1;
     $obj_value = "<$v>";
@@ -1283,15 +1290,16 @@ sub parse_objects {
   };
 
   my $obj_image = sub {
+    my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
-      "Byte offset $token_start: Invalid inline image data!\n")
-      unless $11;
-    $obj_value = { -image => $11 };
+      "Byte offset $start: Invalid inline image data!\n")
+      unless $12;
+    $obj_value = { -image => $12 };
     &$obj_register;
   };
 
   my $obj_ref = sub {
-    my $id = join("-", $3, $4 || ());
+    my $id = join("-", $4, $5 || ());
     if (my $resolved = $self->{-indirect_objects}{$id}) {
       $obj_value = $resolved->{data};
     } else {
@@ -1325,30 +1333,31 @@ sub parse_objects {
   };
 
   my $obj_stream = sub {
-    my $sstart = $token_start + 6 + length $9;
+    my $start = $match_start + length $1;
+    my $sstart = $start + 6 + length $10;
     defined $obj_id
       or croak join(": ", $self->file || (),
-        "Byte offset $token_start: stream without obj!\n");
+        "Byte offset $start: stream without obj!\n");
     my $stream = $obj_value;
     (ref $stream eq 'HASH')
       or croak join(": ", $self->file || (),
-        "Byte offset $token_start: Stream dictionary missing!\n");
+        "Byte offset $start: Stream dictionary missing!\n");
 
     push @{$self->{-trailers}}, $stream
       if ($stream->{Type} // "") eq "/XRef";
 
-    my $matched_length = length $10;
+    my $matched_length = length $11;
     my $length = $stream->{Length};
     if (defined $length and !ref $length) {
       if ($length > $matched_length) {
         carp join(": ", $self->file || (),
-          "Byte offset $token_start: Stream #$obj_id:",
+          "Byte offset $start: Stream #$obj_id:",
           " Declared length $length exceeds actual stream data!\n");
         $length = $matched_length;
       }
     } else {
       carp join(": ", $self->file || (),
-        "Byte offset $token_start: Stream #$obj_id:",
+        "Byte offset $start: Stream #$obj_id:",
         " Stream length not found in metadata!\n")
         unless defined $length;
       $length = $matched_length;
@@ -1356,7 +1365,7 @@ sub parse_objects {
 
     $stream->{-data}    = substr($_, $sstart, $length) // "";
     $stream->{-id}      = $obj_id;
-    $stream->{-offset}  = $token_start;
+    $stream->{-offset}  = $start;
     $stream->{-length}  = $length;
     $stream->{Length}  //= $length;
 
@@ -1368,38 +1377,39 @@ sub parse_objects {
   };
 
   # ===================================================================
-  # Top-level closures (index 6-22).
+  # Top-level closures (index 5-21).
   # ===================================================================
-  my $top_name  = sub { push @objects, $1 };
-  my $top_num   = sub { push @objects, $5 };
-  my $top_cstr  = sub { push @objects, $6 };
-  my $top_bool  = sub { push @objects, $12 };
+  my $top_name  = sub { push @objects, $2 };
+  my $top_num   = sub { push @objects, $6 };
+  my $top_cstr  = sub { push @objects, $7 };
+  my $top_bool  = sub { push @objects, $13 };
   my $top_null  = sub { push @objects, "null" };
-  my $top_token = sub { push @objects, $13 };
+  my $top_token = sub { push @objects, $14 };
 
   my $top_dstr = sub {
-    my $v = $7;
+    my $v = $8;
     $v =~ s/\\$n//go;
     $v =~ s/$n/\n/go;
     push @objects, $v;
   };
 
   my $top_hex = sub {
-    my $v = lc($14);
+    my $v = lc($15);
     $v =~ s/$s+//go;
     $v .= "0" if length($v) % 2 == 1;
     push @objects, "<$v>";
   };
 
   my $top_image = sub {
+    my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
-      "Byte offset $token_start: Invalid inline image data!\n")
-      unless $11;
-    push @objects, { -image => $11 };
+      "Byte offset $start: Invalid inline image data!\n")
+      unless $12;
+    push @objects, { -image => $12 };
   };
 
   my $top_ref = sub {
-    my $id = join("-", $3, $4 || ());
+    my $id = join("-", $4, $5 || ());
     if (my $resolved = $self->{-indirect_objects}{$id}) {
       push @objects, $resolved->{data};
     } else {
@@ -1427,138 +1437,141 @@ sub parse_objects {
   };
 
   # ===================================================================
-  # Build dispatch arrays: [@static, dynamic closures 6..22].
+  # Build dispatch arrays: [@static, dynamic closures 5..21].
   # ===================================================================
+
   $key_mode = [@static,
-    $key_plain_name,     #  6
-    $key_hex_name,       #  7
-    $key_error,          #  8: R
-    $key_error,          #  9: number
-    $key_error,          # 10: clean string
-    $key_error,          # 11: dirty string
-    $key_error,          # 12: boolean
-    $key_error,          # 13: null
-    $key_error,          # 14: token
-    $key_error,          # 15: hex string
-    $key_error,          # 16: image
-    $key_error,          # 17: <<
-    $key_error,          # 18: [
-    $close_dict,         # 19: >>
-    $error_close_array,  # 20: ]
-    $error_endobj,       # 21: endobj
-    $error_stream,       # 22: stream
+    $key_plain_name,     #  5
+    $key_hex_name,       #  6
+    $key_error,          #  7: R
+    $key_error,          #  8: number
+    $key_error,          #  9: clean string
+    $key_error,          # 10: dirty string
+    $key_error,          # 11: boolean
+    $key_error,          # 12: null
+    $key_error,          # 13: token
+    $key_error,          # 14: hex string
+    $key_error,          # 15: image
+    $key_error,          # 16: <<
+    $key_error,          # 17: [
+    $close_dict,         # 18: >>
+    $error_close_array,  # 19: ]
+    $error_endobj,       # 20: endobj
+    $error_stream,       # 21: stream
   ];
 
   $val_mode = [@static,
+    $val_name,           #  5
     $val_name,           #  6
-    $val_name,           #  7
-    $val_ref,            #  8
-    $val_num,            #  9
-    $val_cstr,           # 10
-    $val_dstr,           # 11
-    $val_bool,           # 12
-    $val_null,           # 13
-    $val_token,          # 14
-    $val_hex,            # 15
-    $val_image,          # 16
-    $val_store_dict,     # 17
-    $val_store_array,    # 18
-    $key_missing_value,  # 19: >> (missing value)
-    $error_close_array,  # 20
-    $error_endobj,       # 21
-    $error_stream,       # 22
+    $val_ref,            #  7
+    $val_num,            #  8
+    $val_cstr,           #  9
+    $val_dstr,           # 10
+    $val_bool,           # 11
+    $val_null,           # 12
+    $val_token,          # 13
+    $val_hex,            # 14
+    $val_image,          # 15
+    $val_store_dict,     # 16
+    $val_store_array,    # 17
+    $key_missing_value,  # 18: >> (missing value)
+    $error_close_array,  # 19
+    $error_endobj,       # 20
+    $error_stream,       # 21
   ];
 
   $arr_mode = [@static,
+    $arr_name,           #  5
     $arr_name,           #  6
-    $arr_name,           #  7
-    $arr_ref,            #  8
-    $arr_num,            #  9
-    $arr_cstr,           # 10
-    $arr_dstr,           # 11
-    $arr_bool,           # 12
-    $arr_null,           # 13
-    $arr_token,          # 14
-    $arr_hex,            # 15
-    $arr_image,          # 16
-    $arr_store_dict,     # 17
-    $arr_store_array,    # 18
-    $error_close_dict,   # 19
-    $close_array,        # 20
-    $error_endobj,       # 21
-    $error_stream,       # 22
+    $arr_ref,            #  7
+    $arr_num,            #  8
+    $arr_cstr,           #  9
+    $arr_dstr,           # 10
+    $arr_bool,           # 11
+    $arr_null,           # 12
+    $arr_token,          # 13
+    $arr_hex,            # 14
+    $arr_image,          # 15
+    $arr_store_dict,     # 16
+    $arr_store_array,    # 17
+    $error_close_dict,   # 18
+    $close_array,        # 19
+    $error_endobj,       # 20
+    $error_stream,       # 21
   ];
 
   $obj_mode = [@static,
+    $obj_name,           #  5
     $obj_name,           #  6
-    $obj_name,           #  7
-    $obj_ref,            #  8
-    $obj_num,            #  9
-    $obj_cstr,           # 10
-    $obj_dstr,           # 11
-    $obj_bool,           # 12
-    $obj_null,           # 13
-    $obj_tok,            # 14
-    $obj_hex,            # 15
-    $obj_image,          # 16
-    $obj_store_dict,     # 17
-    $obj_store_array,    # 18
-    $error_close_dict,   # 19
-    $error_close_array,  # 20
-    $obj_endobj,         # 21
-    $obj_stream,         # 22
+    $obj_ref,            #  7
+    $obj_num,            #  8
+    $obj_cstr,           #  9
+    $obj_dstr,           # 10
+    $obj_bool,           # 11
+    $obj_null,           # 12
+    $obj_tok,            # 13
+    $obj_hex,            # 14
+    $obj_image,          # 15
+    $obj_store_dict,     # 16
+    $obj_store_array,    # 17
+    $error_close_dict,   # 18
+    $error_close_array,  # 19
+    $obj_endobj,         # 20
+    $obj_stream,         # 21
   ];
 
   $top_dispatch = [@static,
+    $top_name,           #  5
     $top_name,           #  6
-    $top_name,           #  7
-    $top_ref,            #  8
-    $top_num,            #  9
-    $top_cstr,           # 10
-    $top_dstr,           # 11
-    $top_bool,           # 12
-    $top_null,           # 13
-    $top_token,          # 14
-    $top_hex,            # 15
-    $top_image,          # 16
-    $top_store_dict,     # 17
-    $top_store_array,    # 18
-    $error_close_dict,   # 19
-    $error_close_array,  # 20
-    $error_endobj,       # 21
-    $error_stream,       # 22
+    $top_ref,            #  7
+    $top_num,            #  8
+    $top_cstr,           #  9
+    $top_dstr,           # 10
+    $top_bool,           # 11
+    $top_null,           # 12
+    $top_token,          # 13
+    $top_hex,            # 14
+    $top_image,          # 15
+    $top_store_dict,     # 16
+    $top_store_array,    # 17
+    $error_close_dict,   # 18
+    $error_close_array,  # 19
+    $error_endobj,       # 20
+    $error_stream,       # 21
   ];
 
   $dispatch = $top_dispatch;
 
   # ===================================================================
   # Main parser loop.
+  # Whitespace consumed as prefix, not dispatched.
+  # $match_start updated AFTER dispatch so closures can compute
+  # $token_start = $match_start + length $1 lazily.
   # ===================================================================
-  while (m{\G(?:
-    $ws+(*:1)
-    |(/([^$ss()<>\[\]{}/%\#]*(*:6)(?:[^$ss()<>\[\]{}/%\#]+|\#(?!00)[0-9A-Fa-f]{2}(*:7))*))
-    |(\d+)$ws+(\d+)$ws+(?:R(*:8)|obj(*:2))
-    |((?>[+-]?(?=\.?\d)\d*(?:\.\d*)?))(*:9)
-    |>>(*:19)
-    |\](*:20)
-    |<<(*:17)
-    |\[(*:18)
-    |(\([^\\()\r\n]*\))(*:10)
-    |(\((?:(?>[^\\()]+)|\\.|(?7))*\))(*:11)
-    |startxref$ws+(\d+)(*:3)
-    |endobj(*:21)
-    |stream(\r?\n)((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s(*:22)
-    |ID(?s:$s(.*?)(?:\r\n|$s)?EI$s)?(*:16)
-    |xref(?:$ws*\d+$ws+\d+$n(?:\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))*)*(*:4)
-    |(true|false)(*:12)
-    |null(*:13)
-    |trailer(*:5)
-    |([^$ss()<>\[\]{}/%]+)(*:14)
-    |<([0-9A-Fa-f$ss]*)>(*:15)
+  while (m{\G((?>$ws*))(?:
+    (/([^$ss()<>\[\]{}/%\#]*(*:5)(?:[^$ss()<>\[\]{}/%\#]+|\#(?!00)[0-9A-Fa-f]{2}(*:6))*))
+    |(\d+)$ws+(\d+)$ws+(?:R(*:7)|obj(*:1))
+    |((?>[+-]?(?=\.?\d)\d*(?:\.\d*)?))(*:8)
+    |>>(*:18)
+    |\](*:19)
+    |<<(*:16)
+    |\[(*:17)
+    |(\([^\\()\r\n]*\))(*:9)
+    |(\((?:(?>[^\\()]+)|\\.|(?8))*\))(*:10)
+    |startxref$ws+(\d+)(*:2)
+    |endobj(*:20)
+    |stream(\r?\n)((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s(*:21)
+    |ID(?s:$s(.*?)(?:\r\n|$s)?EI$s)?(*:15)
+    |xref(?:$ws*\d+$ws+\d+$n(?:\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))*)*(*:3)
+    |(true|false)(*:11)
+    |null(*:12)
+    |trailer(*:4)
+    |([^$ss()<>\[\]{}/%]+)(*:13)
+    |<([0-9A-Fa-f$ss]*)>(*:14)
     |([^\r\n]+)(*:0)
   )}xgco) {
-    ($token_start, $token_end) = ($token_end, pos);
     $dispatch->[$REGMARK]->();
+    $match_start = pos;
   }
 
   # Check for unclosed containers.
