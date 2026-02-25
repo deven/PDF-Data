@@ -990,6 +990,7 @@ sub parse_objects {
   my $self = $me;
   my ($obj_id, $obj_offset);
   my $trailer_offset;
+  my $sstart;               # Stream body start, set by (?{}) in regex.
 
   # Object collection.  $objects is swapped to point at new containers
   # during nested dict/array parsing; @stack saves/restores the parent.
@@ -1136,7 +1137,9 @@ sub parse_objects {
   };
 
   # Mark 11: stream.
-  # Branch-reset captures: $2 = newline after "stream", $3 = stream data.
+  # $sstart was set by (?{}) to pos() right after "stream" + newline.
+  # pos() is now past "endstream" + one whitespace char.
+  # The body was not captured — we extract via substr using $sstart.
   $dispatch[11] = sub {
     defined $obj_id
       or croak join(": ", $self->file || (),
@@ -1150,7 +1153,12 @@ sub parse_objects {
     push @{$self->{-trailers}}, $stream
       if ($stream->{Type} // "") eq "/XRef";
 
-    my $matched_length = length $3;
+    # Stream keyword offset: walk back from $sstart past newline + "stream".
+    my $stream_offset = (substr($_, $sstart - 2, 2) eq "\r\n")
+      ? $sstart - 8 : $sstart - 7;
+
+    # Body ends 10 bytes before pos(): 9 for "endstream" + 1 whitespace.
+    my $matched_length = pos() - 10 - $sstart;
     my $length = $stream->{Length};
     if (defined $length and !ref $length) {
       if ($length > $matched_length) {
@@ -1167,9 +1175,9 @@ sub parse_objects {
       $length = $matched_length;
     }
 
-    $stream->{-data}    = substr($3, 0, $length);
+    $stream->{-data}    = substr($_, $sstart, $length);
     $stream->{-id}      = $obj_id;
-    $stream->{-offset}  = $obj_offset;
+    $stream->{-offset}  = $stream_offset;
     $stream->{-length}  = $length;
     $stream->{Length}  //= $length;
 
@@ -1232,7 +1240,7 @@ sub parse_objects {
      |(\((?:(?>[^\\()]+)|\\.|(?-1))*\))(*:8)
      |startxref$ws+(\d+)(*:9)
      |endobj(*:10)
-     |stream(\r?\n)((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s(*:11)
+     |stream$n(?{ $sstart = pos() })(?>[^e]+|(?!endstream$s)e)*endstream$s(*:11)
      |ID(?s:$s(.*?)(?:\r\n|$s)?EI$s)?(*:12)
      |xref(?:$ws*\d+$ws+\d+$n(?:\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))*)*(*:13)
      |(true|false)
