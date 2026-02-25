@@ -934,300 +934,587 @@ sub get_hash_node {
   return $hash;
 }
 
-# Context stack (always starts with \@objects at base):
-#   []       (arrayref)   — PDF array being constructed (raw values pushed)
-#   {}       (hashref)    — PDF dictionary being constructed (key-value pairs stored)
-#   "name"   (scalar)     — pending dictionary key (next value stored under this key)
+# Closure-based parse_objects redesign.
 #
-# 3-way dispatch for storing a value $v:
-#   !ref $context[-1]          — dict value: $key = pop @context; $context[-1]{$key} = $v
-#   ref $context[-1] eq 'HASH' — error (expected name key, not value)
-#   else (ARRAY)               — push to current array (or top-level @objects)
+# (*MARK) dispatch indices:
+#
+# Static (0-5) — identical in every context:
+#  0 = parse error
+#  1 = whitespace (no-op)
+#  2 = obj
+#  3 = startxref
+#  4 = xref
+#  5 = trailer
+#
+# Dynamic (6-22) — vary per context:
+#  6 = plain name       14 = other token
+#  7 = hex-encoded name 15 = hex string
+#  8 = R                16 = inline image
+#  9 = number           17 = store_dict  (<<)
+# 10 = clean string     18 = store_array ([)
+# 11 = dirty string     19 = close_dict  (>>)
+# 12 = boolean          20 = close_array (])
+# 13 = null             21 = endobj
+#                       22 = stream
+#
+# Capture variables:
+#  $1  = /Name token (with /)
+#  $2  = Name (without /)
+#  $3  = object number
+#  $4  = generation number
+#  $5  = number value
+#  $6  = clean string
+#  $7  = dirty string (nested parens/escapes/newlines)
+#  $8  = startxref offset
+#  $9  = stream newline (\r?\n)
+#  $10 = stream data
+#  $11 = inline image data
+#  $12 = boolean (true|false)
+#  $13 = other token
+#  $14 = hex string content
+#  $15 = parse error text
 
-# Parse PDF objects into Perl representations.
+our $REGMARK;
+
 sub parse_objects {
-  my ($self, $data, $start_pos) = @_;
+  my ($me, $data, $start_pos) = @_;
 
-  # Alias local $_ variable to $data or ${$data}.
+  # Alias local $_ to $data or $$data.
   local $_;
   *_ = ref($data) eq "SCALAR" ? $data : \$data;
 
-  # Parser state.
-  my (@context, $start, $sstart);
-
-  # Result array — always seeded into context stack.
+  # Parser state — shared lexicals for all closures.
+  my $self = $me;
+  my ($key, $token_start, $token_end);
+  my ($obj_id, $obj_offset, $obj_value, $prev_obj_dispatch);
+  my $dispatch;
   my @objects;
-  push @context, \@objects;
 
-  # Current indirect object being defined (set by obj, consumed by endobj/stream).
-  my ($obj_id, $obj_offset);
+  $token_end = $start_pos || 0;
+  pos = $token_end;
 
-  # Trailer offset (undef = no trailer pending).
-  my $trailer_offset;
+  # ===================================================================
+  # Key-mode error support.
+  # ===================================================================
+  my @mark_type;
+  $mark_type[8]  = "indirect ref";
+  $mark_type[9]  = "number";
+  $mark_type[10] = "string";
+  $mark_type[11] = "string";
+  $mark_type[12] = "boolean";
+  $mark_type[13] = "null";
+  $mark_type[14] = "token";
+  $mark_type[15] = "hex string";
+  $mark_type[16] = "inline image";
+  $mark_type[17] = "<<";
+  $mark_type[18] = "[";
 
-  # Track match position for calculating $start from whitespace length.
-  my $match_start = $start_pos || 0;
-  pos = $match_start;
+  my $key_error = sub {
+    croak join(": ", $self->file || (),
+      "Byte offset $token_start: Expected dictionary key (name), got " .
+      ($mark_type[$REGMARK] // "value") . "!\n");
+  };
 
-  # Parse PDF objects in input string.
-  while (m{\G((?>$ws*))(?:                                                 # Optional whitespace  ($1)
-    (/((?:[^$ss()<>\[\]{}/%\#]+|\#(?!00)[0-9A-Fa-f]{2})*))                 # Name: /Name          ($2, $3)
-    |(\d+)$ws+(\d+)$ws+(R|obj)                                             # Indirect ref/obj     ($4, $5, $6)
-    |((?>[+-]?(?=\.?\d)\d*(\.\d*)?))                                       # Number               ($7, $8)
-    |(>>)                                                                  # End dict             ($9)
-    |(\])                                                                  # End array            ($10)
-    |(<<)                                                                  # Start dict           ($11)
-    |(\[)                                                                  # Start array          ($12)
-    |(\((?:(?>[^\\()]+)|\\.|(?-1))*\))                                     # String literal       ($13)
-    |startxref$ws+(\d+)                                                    # startxref            ($14)
-    |(endobj)                                                              # endobj               ($15)
-    |(stream)(\r?\n)((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s           # stream...endstream   ($16, $17, $18)
-    |(ID)(?s:$s(.*?)(?:\r\n|$s)?EI$s)?                                     # Inline image         ($19, $20)
-    |(xref)(?:$ws*\d+$ws+\d+$n(?:\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))*)*  # xref table           ($21)
-    |(true|false)                                                          # Boolean              ($22)
-    |(null)                                                                # Null                 ($23)
-    |([^$ss()<>\[\]{}/%]+)                                                 # Other token          ($24)
-    |<([0-9A-Fa-f$ss]*)>                                                   # Hex string           ($25)
-    |([^\r\n]+)                                                            # Parse error          ($26)
-  )}xgco) {
-    $start = $match_start + length $1;
-    $match_start = pos;
+  # ===================================================================
+  # Error closures for mismatched delimiters.
+  # ===================================================================
+  my $error_close_dict = sub {
+    croak join(": ", $self->file || (),
+      "Byte offset $token_start: \">>\" without matching \"<<\"!\n");
+  };
 
-    if (defined $2) {
-      # Name object: /Name
-      my ($token, $name) = ($2, $3);
+  my $error_close_array = sub {
+    croak join(": ", $self->file || (),
+      "Byte offset $token_start: \"]\" without matching \"[\"!\n");
+  };
 
-      $name =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/geo
-        if $self->{-pdf_version} >= 1.2 and index($name, '#') >= 0;
+  my $error_endobj = sub {
+    croak join(": ", $self->file || (),
+      "Byte offset $token_start: endobj without matching obj!\n");
+  };
 
-      if (!ref $context[-1]) {
-        my $key = pop @context;
-        $context[-1]{$key} = $token;
-      } elsif (ref $context[-1] eq 'HASH') {
-        push @context, $name;
+  my $error_stream = sub {
+    croak join(": ", $self->file || (),
+      "Byte offset $token_start: stream without obj!\n");
+  };
+
+  # ===================================================================
+  # Forward declarations.
+  # ===================================================================
+  my ($new_dict, $new_array, $top_dispatch, $obj_mode);
+
+  # ===================================================================
+  # Obj registration helper (shared, called by obj-mode store closures).
+  # ===================================================================
+  my $obj_register = sub {
+    my $object = { data => $obj_value, id => $obj_id };
+    $self->{-indirect_objects}{$obj_id}              = $object;
+    $self->{-indirect_objects}{offset}{$obj_offset}   = $object;
+    if (my $refs = delete $self->{-unresolved_refs}{$obj_id}) {
+      ${$_} = $obj_value for @{$refs};
+    }
+  };
+
+  # ===================================================================
+  # Static closures (indices 0-5, same in every context).
+  # ===================================================================
+  my $parse_error = sub {
+    croak join(": ", $self->file || (),
+      "Byte offset $token_start: Parse error on input: \"$15\"\n");
+  };
+
+  my $skip_ws = sub { };
+
+  my $handle_obj = sub {
+    $obj_id     = join("-", $3, $4 || ());
+    $obj_offset = $token_start;
+    $prev_obj_dispatch = $dispatch;
+    $dispatch = $obj_mode;
+  };
+
+  my $handle_startxref = sub { $self->{-startxref} = $8 };
+
+  my $handle_xref = sub { };
+
+  # Trailer: one-shot hook on STORE_DICT (slot 17) in current dispatch.
+  my $handle_trailer = sub {
+    my $saved_start = $token_start;
+    my $orig = $dispatch->[17];
+    $dispatch->[17] = sub {
+      $dispatch->[17] = $orig;
+      &$orig;
+      $objects[-1]{-offset} = $saved_start;
+      push @{$self->{-trailers}}, $objects[-1];
+    };
+  };
+
+  my @static = (
+    $parse_error,       # 0
+    $skip_ws,           # 1
+    $handle_obj,        # 2
+    $handle_startxref,  # 3
+    $handle_xref,       # 4
+    $handle_trailer,    # 5
+  );
+
+  # ===================================================================
+  # new_dict: create dict context, set $dispatch, return dict ref.
+  # $restore = dispatch array to restore to on close_dict.
+  # ===================================================================
+  $new_dict = sub {
+    my ($restore) = @_;
+    my $dict = {};
+    my $close_dict = sub { $dispatch = $restore };
+
+    # Forward declare for mutual references.
+    my ($key_mode, $val_mode);
+
+    # --- Key mode closures ---
+    my $key_plain_name = sub {
+      $key = $2;
+      $dispatch = $val_mode;
+    };
+
+    my $key_hex_name = sub {
+      $key = $2;
+      $key =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/geo;
+      $dispatch = $val_mode;
+    };
+
+    # --- Val mode closures (store under $key, flip to key mode) ---
+    my $val_store_name = sub { $dict->{$key} = $1; $dispatch = $key_mode };
+    my $val_number     = sub { $dict->{$key} = $5; $dispatch = $key_mode };
+    my $val_clean_str  = sub { $dict->{$key} = $6; $dispatch = $key_mode };
+
+    my $val_dirty_str = sub {
+      my $v = $7;
+      $v =~ s/\\$n//go;
+      $v =~ s/$n/\n/go;
+      $dict->{$key} = $v;
+      $dispatch = $key_mode;
+    };
+
+    my $val_bool  = sub { $dict->{$key} = $12;   $dispatch = $key_mode };
+    my $val_null  = sub { $dict->{$key} = "null"; $dispatch = $key_mode };
+    my $val_token = sub { $dict->{$key} = $13;    $dispatch = $key_mode };
+
+    my $val_hex = sub {
+      my $v = lc($14);
+      $v =~ s/$s+//go;
+      $v .= "0" if length($v) % 2 == 1;
+      $dict->{$key} = "<$v>";
+      $dispatch = $key_mode;
+    };
+
+    my $val_image = sub {
+      croak join(": ", $self->file || (),
+        "Byte offset $token_start: Invalid inline image data!\n")
+        unless $11;
+      $dict->{$key} = { -image => $11 };
+      $dispatch = $key_mode;
+    };
+
+    my $val_ref = sub {
+      my $id = join("-", $3, $4 || ());
+      if (my $resolved = $self->{-indirect_objects}{$id}) {
+        $dict->{$key} = $resolved->{data};
       } else {
-        push @{$context[-1]}, $token;
+        $dict->{$key} = \$id;
+        push @{$self->{-unresolved_refs}{$id}}, \$dict->{$key};
       }
-    } elsif (defined $4) {
-      # Indirect reference or indirect object definition
-      if ($6 eq "obj") {
-        # obj — remember current indirect object ID and offset.
-        $obj_id     = join("-", $4, $5 || ());
-        $obj_offset = $start;
-      } else {
-        # R — resolve or create forward reference.
-        my $id = join("-", $4, $5 || ());
-        if (my $resolved = $self->{-indirect_objects}{$id}) {
-          if (!ref $context[-1]) {
-            my $key = pop @context;
-            $context[-1]{$key} = $resolved->{data};
-          } elsif (ref $context[-1] eq 'HASH') {
-            croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got indirect ref!\n");
-          } else {
-            push @{$context[-1]}, $resolved->{data};
-          }
-        } else {
-          my $ref = \$id;
-          if (!ref $context[-1]) {
-            my $key = pop @context;
-            my $slot = \$context[-1]{$key};
-            ${$slot} = $ref;
-            push @{$self->{-unresolved_refs}{$id}}, $slot;
-          } elsif (ref $context[-1] eq 'HASH') {
-            croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got indirect ref!\n");
-          } else {
-            my $i = push(@{$context[-1]}, $ref) - 1;
-            push @{$self->{-unresolved_refs}{$id}}, \$context[-1][$i];
-          }
-        }
-      }
-    } elsif (defined $7) {
-      # Number (integer or real)
-      if (!ref $context[-1]) {
-        my $key = pop @context;
-        $context[-1]{$key} = $7;
-      } elsif (ref $context[-1] eq 'HASH') {
-        croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got number!\n");
-      } else {
-        push @{$context[-1]}, $7;
-      }
-    } elsif (defined $9) {
-      # End of dictionary: >>
-      @context > 1 and !ref $context[-1]
-        and croak join(": ", $self->file || (), "Byte offset $start: Parse error: Missing value for key \"$context[-1]\" before \">>\" token!\n");
-      @context > 1 and ref $context[-1] eq 'HASH'
-        or croak join(": ", $self->file || (), "Byte offset $start: Parse error: \">>\" token found without matching \"<<\" token!\n");
-      pop @context;
-      # Trailer detection: if trailer keyword preceded this dict, register it.
-      if (defined $trailer_offset and @context == 1) {
-        $objects[-1]{-offset} = $trailer_offset;
-        push @{$self->{-trailers}}, $objects[-1];
-        undef $trailer_offset;
-      }
-    } elsif (defined $10) {
-      # End of array: ]
-      (@context > 1 and ref $context[-1] eq 'ARRAY')
-        or croak join(": ", $self->file || (), "Byte offset $start: Parse error: \"]\" token found without matching \"[\" token!\n");
-      pop @context;
-    } elsif (defined $11) {
-      # Dictionary start: <<
-      my $dict = {};
-      if (!ref $context[-1]) {
-        my $key = pop @context;
-        $context[-1]{$key} = $dict;
-      } elsif (ref $context[-1] eq 'HASH') {
-        croak join(": ", $self->file || (), "Byte offset $start: Parse error: Expected dictionary key (name), got \"<<\"!\n");
-      } else {
-        push @{$context[-1]}, $dict;
-      }
-      push @context, $dict;
-    } elsif (defined $12) {
-      # Array start: [
-      my $array = [];
-      if (!ref $context[-1]) {
-        my $key = pop @context;
-        $context[-1]{$key} = $array;
-      } elsif (ref $context[-1] eq 'HASH') {
-        croak join(": ", $self->file || (), "Byte offset $start: Parse error: Expected dictionary key (name), got \"[\"!\n");
-      } else {
-        push @{$context[-1]}, $array;
-      }
-      push @context, $array;
-    } elsif (defined $13) {
-      # String literal: (...)
-      my $data = $13;
-      $data =~ s/\\$n//go  if index($data, '\\') >= 0;
-      $data =~ s/$n/\n/go  if index($data, "\r") >= 0;
-      if (!ref $context[-1]) {
-        my $key = pop @context;
-        $context[-1]{$key} = $data;
-      } elsif (ref $context[-1] eq 'HASH') {
-        croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got string!\n");
-      } else {
-        push @{$context[-1]}, $data;
-      }
-    } elsif (defined $14) {
-      # startxref — save offset as side effect.
-      $self->{-startxref} = $14;
-    } elsif (defined $15) {
-      # endobj — register indirect object.
-      defined $obj_id
-        or croak join(": ", $self->file || (), "Byte offset $start: endobj without matching obj!\n");
-      my $value = pop @objects;
-      my $object = { data => $value, id => $obj_id };
-      $self->{-indirect_objects}{$obj_id}              = $object;
-      $self->{-indirect_objects}{offset}{$obj_offset}  = $object;
-      if (my $refs = delete $self->{-unresolved_refs}{$obj_id}) {
-        ${$_} = $value for @{$refs};
-      }
-      undef $obj_id;
-    } elsif (defined $16) {
-      # stream ... endstream
-      $sstart = $start + 6 + length $17;
-      defined $obj_id
-        or croak join(": ", $self->file || (), "Byte offset $start: stream without obj!\n");
-      my $stream = $objects[-1];
-      (ref $stream eq 'HASH')
-        or croak join(": ", $self->file || (), "Byte offset $start: Stream dictionary missing!\n");
+      $dispatch = $key_mode;
+    };
 
-      # XRef cross-reference streams are trailers.
-      push @{$self->{-trailers}}, $stream if ($stream->{Type} // "") eq "/XRef";
+    # Store closures for << and [ pass the parent's post-flip state
+    # (key_mode) as the restore target for the child container.
+    my $val_store_dict  = sub { $dict->{$key} = &$new_dict($key_mode) };
+    my $val_store_array = sub { $dict->{$key} = &$new_array($key_mode) };
 
-      # Validate stream length.
-      my $matched_length = length $18;
-      my $length = $stream->{Length};
-      if (defined $length and !ref $length) {
-        if ($length > $matched_length) {
-          carp join(": ", $self->file || (), "Byte offset $start: Stream #$obj_id: Declared length $length exceeds actual stream data!\n");
-          $length = $matched_length;
-        }
+    my $val_missing = sub {
+      croak join(": ", $self->file || (),
+        "Byte offset $token_start: Missing value for key",
+        " \"$key\" before \">>\"!\n");
+    };
+
+    $key_mode = [@static,
+      $key_plain_name,     #  6: plain name
+      $key_hex_name,       #  7: hex name
+      $key_error,          #  8: R
+      $key_error,          #  9: number
+      $key_error,          # 10: clean string
+      $key_error,          # 11: dirty string
+      $key_error,          # 12: boolean
+      $key_error,          # 13: null
+      $key_error,          # 14: token
+      $key_error,          # 15: hex string
+      $key_error,          # 16: image
+      $key_error,          # 17: store_dict
+      $key_error,          # 18: store_array
+      $close_dict,         # 19: close dict
+      $error_close_array,  # 20: close array
+      $restore->[21],      # 21: endobj (inherited)
+      $restore->[22],      # 22: stream (inherited)
+    ];
+
+    $val_mode = [@static,
+      $val_store_name,     #  6: plain name
+      $val_store_name,     #  7: hex name (store raw /Name)
+      $val_ref,            #  8: R
+      $val_number,         #  9: number
+      $val_clean_str,      # 10: clean string
+      $val_dirty_str,      # 11: dirty string
+      $val_bool,           # 12: boolean
+      $val_null,           # 13: null
+      $val_token,          # 14: token
+      $val_hex,            # 15: hex string
+      $val_image,          # 16: image
+      $val_store_dict,     # 17: store_dict
+      $val_store_array,    # 18: store_array
+      $val_missing,        # 19: close dict (missing value)
+      $error_close_array,  # 20: close array
+      $restore->[21],      # 21: endobj (inherited)
+      $restore->[22],      # 22: stream (inherited)
+    ];
+
+    $dispatch = $key_mode;
+    return $dict;
+  };
+
+  # ===================================================================
+  # new_array: create array context, set $dispatch, return array ref.
+  # ===================================================================
+  $new_array = sub {
+    my ($restore) = @_;
+    my $array = [];
+
+    # Forward declare for self-reference in store_array.
+    my $arr_mode;
+
+    my $arr_store_name = sub { push @$array, $1 };
+    my $arr_number     = sub { push @$array, $5 };
+    my $arr_clean_str  = sub { push @$array, $6 };
+
+    my $arr_dirty_str = sub {
+      my $v = $7;
+      $v =~ s/\\$n//go;
+      $v =~ s/$n/\n/go;
+      push @$array, $v;
+    };
+
+    my $arr_bool  = sub { push @$array, $12 };
+    my $arr_null  = sub { push @$array, "null" };
+    my $arr_token = sub { push @$array, $13 };
+
+    my $arr_hex = sub {
+      my $v = lc($14);
+      $v =~ s/$s+//go;
+      $v .= "0" if length($v) % 2 == 1;
+      push @$array, "<$v>";
+    };
+
+    my $arr_image = sub {
+      croak join(": ", $self->file || (),
+        "Byte offset $token_start: Invalid inline image data!\n")
+        unless $11;
+      push @$array, { -image => $11 };
+    };
+
+    my $arr_ref = sub {
+      my $id = join("-", $3, $4 || ());
+      if (my $resolved = $self->{-indirect_objects}{$id}) {
+        push @$array, $resolved->{data};
       } else {
-        carp join(": ", $self->file || (), "Byte offset $start: Stream #$obj_id: Stream length not found in metadata!\n")
-          unless defined $length;
+        push @$array, \$id;
+        push @{$self->{-unresolved_refs}{$id}}, \$array->[-1];
+      }
+    };
+
+    my $arr_store_dict  = sub { push @$array, &$new_dict($arr_mode) };
+    my $arr_store_array = sub { push @$array, &$new_array($arr_mode) };
+
+    $arr_mode = [@static,
+      $arr_store_name,      #  6: plain name
+      $arr_store_name,      #  7: hex name (store raw /Name)
+      $arr_ref,             #  8: R
+      $arr_number,          #  9: number
+      $arr_clean_str,       # 10: clean string
+      $arr_dirty_str,       # 11: dirty string
+      $arr_bool,            # 12: boolean
+      $arr_null,            # 13: null
+      $arr_token,           # 14: token
+      $arr_hex,             # 15: hex string
+      $arr_image,           # 16: image
+      $arr_store_dict,      # 17: store_dict
+      $arr_store_array,     # 18: store_array
+      $error_close_dict,    # 19: close dict (error)
+      sub { $dispatch = $restore },  # 20: close array
+      $restore->[21],       # 21: endobj (inherited)
+      $restore->[22],       # 22: stream (inherited)
+    ];
+
+    $dispatch = $arr_mode;
+    return $array;
+  };
+
+  # ===================================================================
+  # Obj-mode closures (created once, reused for all obj contexts).
+  # ===================================================================
+  my $obj_store_name = sub { $obj_value = $1; &$obj_register };
+  my $obj_number     = sub { $obj_value = $5; &$obj_register };
+  my $obj_clean_str  = sub { $obj_value = $6; &$obj_register };
+
+  my $obj_dirty_str = sub {
+    my $v = $7;
+    $v =~ s/\\$n//go;
+    $v =~ s/$n/\n/go;
+    $obj_value = $v;
+    &$obj_register;
+  };
+
+  my $obj_bool  = sub { $obj_value = $12;   &$obj_register };
+  my $obj_null  = sub { $obj_value = "null"; &$obj_register };
+  my $obj_token = sub { $obj_value = $13;    &$obj_register };
+
+  my $obj_hex = sub {
+    my $v = lc($14);
+    $v =~ s/$s+//go;
+    $v .= "0" if length($v) % 2 == 1;
+    $obj_value = "<$v>";
+    &$obj_register;
+  };
+
+  my $obj_image = sub {
+    croak join(": ", $self->file || (),
+      "Byte offset $token_start: Invalid inline image data!\n")
+      unless $11;
+    $obj_value = { -image => $11 };
+    &$obj_register;
+  };
+
+  my $obj_ref = sub {
+    my $id = join("-", $3, $4 || ());
+    if (my $resolved = $self->{-indirect_objects}{$id}) {
+      $obj_value = $resolved->{data};
+    } else {
+      $obj_value = \$id;
+      push @{$self->{-unresolved_refs}{$id}}, \$obj_value;
+    }
+    &$obj_register;
+  };
+
+  my $obj_store_dict  = sub { $obj_value = &$new_dict($obj_mode);  &$obj_register };
+  my $obj_store_array = sub { $obj_value = &$new_array($obj_mode); &$obj_register };
+
+  my $obj_endobj = sub {
+    undef $obj_id;
+    $dispatch = $prev_obj_dispatch;
+  };
+
+  my $obj_stream = sub {
+    my $sstart = $token_start + 6 + length $9;
+    defined $obj_id
+      or croak join(": ", $self->file || (),
+        "Byte offset $token_start: stream without obj!\n");
+    my $stream = $obj_value;
+    (ref $stream eq 'HASH')
+      or croak join(": ", $self->file || (),
+        "Byte offset $token_start: Stream dictionary missing!\n");
+
+    # XRef cross-reference streams are trailers.
+    push @{$self->{-trailers}}, $stream
+      if ($stream->{Type} // "") eq "/XRef";
+
+    # Validate stream length.
+    my $matched_length = length $10;
+    my $length = $stream->{Length};
+    if (defined $length and !ref $length) {
+      if ($length > $matched_length) {
+        carp join(": ", $self->file || (),
+          "Byte offset $token_start: Stream #$obj_id:",
+          " Declared length $length exceeds actual stream data!\n");
         $length = $matched_length;
       }
-
-      # Store stream data as private keys on the dict.
-      $stream->{-data}    = substr($_, $sstart, $length) // "";
-      $stream->{-id}      = $obj_id;
-      $stream->{-offset}  = $start;
-      $stream->{-length}  = $length;
-      $stream->{Length}  //= $length;
-
-      push @{$self->{-streams}}, $stream;
-
-      $self->filter_stream($stream) if $stream->{Filter};
-      $self->parse_object_stream($stream) if ($stream->{Type} // "") eq "/ObjStm";
-    } elsif (defined $19) {
-      # Inline image data: ID ... EI
-      croak join(": ", $self->file || (), "Byte offset $start: Invalid inline image data!\n") unless $20;
-      my $image = { -image => $20 };
-      if (!ref $context[-1]) {
-        my $key = pop @context;
-        $context[-1]{$key} = $image;
-      } elsif (ref $context[-1] eq 'HASH') {
-        croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got inline image!\n");
-      } else {
-        push @{$context[-1]}, $image;
-      }
-    } elsif (defined $21) {
-      # Cross-reference table: entries consumed inline by regex.
-    } elsif (defined $22) {
-      # Boolean: true or false
-      if (!ref $context[-1]) {
-        my $key = pop @context;
-        $context[-1]{$key} = $22;
-      } elsif (ref $context[-1] eq 'HASH') {
-        croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got boolean!\n");
-      } else {
-        push @{$context[-1]}, $22;
-      }
-    } elsif (defined $23) {
-      # Null
-      if (!ref $context[-1]) {
-        my $key = pop @context;
-        $context[-1]{$key} = $23;
-      } elsif (ref $context[-1] eq 'HASH') {
-        croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got null!\n");
-      } else {
-        push @{$context[-1]}, $23;
-      }
-    } elsif (defined $24) {
-      # Other token
-      if ($24 eq "trailer") {
-        # Set trailer flag — the next dict at top level is a trailer.
-        $trailer_offset = $start;
-      } elsif (!ref $context[-1]) {
-        my $key = pop @context;
-        $context[-1]{$key} = $24;
-      } elsif (ref $context[-1] eq 'HASH') {
-        croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got token \"$24\"!\n");
-      } else {
-        push @{$context[-1]}, $24;
-      }
-    } elsif (defined $25) {
-      # Hexadecimal string: <...>
-      my $data = lc($25);
-      $data =~ s/$s+//go;
-      $data .= "0" if length($data) % 2 == 1;
-      $data = "<$data>";
-      if (!ref $context[-1]) {
-        my $key = pop @context;
-        $context[-1]{$key} = $data;
-      } elsif (ref $context[-1] eq 'HASH') {
-        croak join(": ", $self->file || (), "Byte offset $start: Expected dictionary key (name), got hex string!\n");
-      } else {
-        push @{$context[-1]}, $data;
-      }
     } else {
-      # Parse error
-      croak join(": ", $self->file || (), "Byte offset $start: Parse error on input: \"$26\"\n");
+      carp join(": ", $self->file || (),
+        "Byte offset $token_start: Stream #$obj_id:",
+        " Stream length not found in metadata!\n")
+        unless defined $length;
+      $length = $matched_length;
     }
+
+    $stream->{-data}    = substr($_, $sstart, $length) // "";
+    $stream->{-id}      = $obj_id;
+    $stream->{-offset}  = $token_start;
+    $stream->{-length}  = $length;
+    $stream->{Length}  //= $length;
+
+    push @{$self->{-streams}}, $stream;
+
+    $self->filter_stream($stream) if $stream->{Filter};
+    $self->parse_object_stream($stream) if ($stream->{Type} // "") eq "/ObjStm";
+  };
+
+  $obj_mode = [@static,
+    $obj_store_name,    #  6: plain name
+    $obj_store_name,    #  7: hex name
+    $obj_ref,           #  8: R
+    $obj_number,        #  9: number
+    $obj_clean_str,     # 10: clean string
+    $obj_dirty_str,     # 11: dirty string
+    $obj_bool,          # 12: boolean
+    $obj_null,          # 13: null
+    $obj_token,         # 14: token
+    $obj_hex,           # 15: hex string
+    $obj_image,         # 16: image
+    $obj_store_dict,    # 17: store_dict
+    $obj_store_array,   # 18: store_array
+    $error_close_dict,  # 19: close dict (error)
+    $error_close_array, # 20: close array (error)
+    $obj_endobj,        # 21: endobj
+    $obj_stream,        # 22: stream
+  ];
+
+  # ===================================================================
+  # Top-level dispatch.
+  # ===================================================================
+  my $top_store_name = sub { push @objects, $1 };
+  my $top_number     = sub { push @objects, $5 };
+  my $top_clean_str  = sub { push @objects, $6 };
+
+  my $top_dirty_str = sub {
+    my $v = $7;
+    $v =~ s/\\$n//go;
+    $v =~ s/$n/\n/go;
+    push @objects, $v;
+  };
+
+  my $top_bool  = sub { push @objects, $12 };
+  my $top_null  = sub { push @objects, "null" };
+  my $top_token = sub { push @objects, $13 };
+
+  my $top_hex = sub {
+    my $v = lc($14);
+    $v =~ s/$s+//go;
+    $v .= "0" if length($v) % 2 == 1;
+    push @objects, "<$v>";
+  };
+
+  my $top_image = sub {
+    croak join(": ", $self->file || (),
+      "Byte offset $token_start: Invalid inline image data!\n")
+      unless $11;
+    push @objects, { -image => $11 };
+  };
+
+  my $top_ref = sub {
+    my $id = join("-", $3, $4 || ());
+    if (my $resolved = $self->{-indirect_objects}{$id}) {
+      push @objects, $resolved->{data};
+    } else {
+      push @objects, \$id;
+      push @{$self->{-unresolved_refs}{$id}}, \$objects[-1];
+    }
+  };
+
+  my $top_store_dict  = sub { push @objects, &$new_dict($top_dispatch) };
+  my $top_store_array = sub { push @objects, &$new_array($top_dispatch) };
+
+  $top_dispatch = [@static,
+    $top_store_name,    #  6: plain name
+    $top_store_name,    #  7: hex name
+    $top_ref,           #  8: R
+    $top_number,        #  9: number
+    $top_clean_str,     # 10: clean string
+    $top_dirty_str,     # 11: dirty string
+    $top_bool,          # 12: boolean
+    $top_null,          # 13: null
+    $top_token,         # 14: token
+    $top_hex,           # 15: hex string
+    $top_image,         # 16: image
+    $top_store_dict,    # 17: store_dict
+    $top_store_array,   # 18: store_array
+    $error_close_dict,  # 19: close dict (error)
+    $error_close_array, # 20: close array (error)
+    $error_endobj,      # 21: endobj (error)
+    $error_stream,      # 22: stream (error)
+  ];
+
+  $dispatch = $top_dispatch;
+
+  # ===================================================================
+  # Main parser loop.
+  # ===================================================================
+  while (m{\G(?:
+    $ws+(*:1)
+    |(/([^$ss()<>\[\]{}/%\#]*(*:6)(?:[^$ss()<>\[\]{}/%\#]+|\#(?!00)[0-9A-Fa-f]{2}(*:7))*))
+    |(\d+)$ws+(\d+)$ws+(?:R(*:8)|obj(*:2))
+    |((?>[+-]?(?=\.?\d)\d*(?:\.\d*)?))(*:9)
+    |>>(*:19)
+    |\](*:20)
+    |<<(*:17)
+    |\[(*:18)
+    |(\([^\\()\r\n]*\))(*:10)
+    |(\((?:(?>[^\\()]+)|\\.|(?7))*\))(*:11)
+    |startxref$ws+(\d+)(*:3)
+    |endobj(*:21)
+    |stream(\r?\n)((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s(*:22)
+    |ID(?s:$s(.*?)(?:\r\n|$s)?EI$s)?(*:16)
+    |xref(?:$ws*\d+$ws+\d+$n(?:\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))*)*(*:4)
+    |(true|false)(*:12)
+    |null(*:13)
+    |trailer(*:5)
+    |([^$ss()<>\[\]{}/%]+)(*:14)
+    |<([0-9A-Fa-f$ss]*)>(*:15)
+    |([^\r\n]+)(*:0)
+  )}xgco) {
+    ($token_start, $token_end) = ($token_end, pos);
+    $dispatch->[$REGMARK]->();
   }
 
   # Check for unclosed containers.
-  croak join(": ", $self->file || (), "Parse error: Unclosed " .
-    ((ref $context[-1] || 'HASH') eq 'HASH' ? "dictionary" : "array") . "!\n") if @context > 1;
+  croak join(": ", $self->file || (),
+    "Parse error: Unclosed container!\n")
+    if $dispatch != $top_dispatch;
 
   # Return parsed objects.
   return wantarray ? @objects : $objects[0];
