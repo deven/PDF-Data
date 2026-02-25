@@ -935,10 +935,11 @@ sub get_hash_node {
 }
 
 # Closure-based parse_objects redesign.
+# All closures pre-built once.  Container nesting via explicit stacks.
 #
 # (*MARK) dispatch indices:
 #
-# Static (0-5) — identical in every context:
+# Static (0-5) — same in every dispatch array:
 #  0 = parse error
 #  1 = whitespace (no-op)
 #  2 = obj
@@ -963,7 +964,7 @@ sub get_hash_node {
 #  $3  = object number
 #  $4  = generation number
 #  $5  = number value
-#  $6  = clean string
+#  $6  = clean string (no parens/backslash/CR/LF)
 #  $7  = dirty string (nested parens/escapes/newlines)
 #  $8  = startxref offset
 #  $9  = stream newline (\r?\n)
@@ -974,8 +975,6 @@ sub get_hash_node {
 #  $14 = hex string content
 #  $15 = parse error text
 
-our $REGMARK;
-
 sub parse_objects {
   my ($me, $data, $start_pos) = @_;
 
@@ -983,18 +982,28 @@ sub parse_objects {
   local $_;
   *_ = ref($data) eq "SCALAR" ? $data : \$data;
 
+  our $REGMARK;
+
   # Parser state — shared lexicals for all closures.
   my $self = $me;
-  my ($key, $token_start, $token_end);
+  my ($key, $dict, $array, $token_start, $token_end);
   my ($obj_id, $obj_offset, $obj_value, $prev_obj_dispatch);
   my $dispatch;
   my @objects;
+
+  # Container nesting stacks.
+  my (@dispatch_stack, @dict_stack, @array_stack);
 
   $token_end = $start_pos || 0;
   pos = $token_end;
 
   # ===================================================================
-  # Key-mode error support.
+  # Forward declarations.
+  # ===================================================================
+  my ($key_mode, $val_mode, $arr_mode, $obj_mode, $top_dispatch);
+
+  # ===================================================================
+  # Error support.
   # ===================================================================
   my @mark_type;
   $mark_type[8]  = "indirect ref";
@@ -1015,9 +1024,6 @@ sub parse_objects {
       ($mark_type[$REGMARK] // "value") . "!\n");
   };
 
-  # ===================================================================
-  # Error closures for mismatched delimiters.
-  # ===================================================================
   my $error_close_dict = sub {
     croak join(": ", $self->file || (),
       "Byte offset $token_start: \">>\" without matching \"<<\"!\n");
@@ -1039,12 +1045,7 @@ sub parse_objects {
   };
 
   # ===================================================================
-  # Forward declarations.
-  # ===================================================================
-  my ($new_dict, $new_array, $top_dispatch, $obj_mode);
-
-  # ===================================================================
-  # Obj registration helper (shared, called by obj-mode store closures).
+  # Obj registration (called by obj-mode store closures).
   # ===================================================================
   my $obj_register = sub {
     my $object = { data => $obj_value, id => $obj_id };
@@ -1056,7 +1057,7 @@ sub parse_objects {
   };
 
   # ===================================================================
-  # Static closures (indices 0-5, same in every context).
+  # Static closures (indices 0-5).
   # ===================================================================
   my $parse_error = sub {
     croak join(": ", $self->file || (),
@@ -1076,7 +1077,8 @@ sub parse_objects {
 
   my $handle_xref = sub { };
 
-  # Trailer: one-shot hook on STORE_DICT (slot 17) in current dispatch.
+  # Trailer: one-shot hook on store_dict (slot 17).
+  # Creates one closure per trailer keyword (1-2 per file, negligible).
   my $handle_trailer = sub {
     my $saved_start = $token_start;
     my $orig = $dispatch->[17];
@@ -1098,222 +1100,179 @@ sub parse_objects {
   );
 
   # ===================================================================
-  # new_dict: create dict context, set $dispatch, return dict ref.
-  # $restore = dispatch array to restore to on close_dict.
+  # Shared close closures.
   # ===================================================================
-  $new_dict = sub {
-    my ($restore) = @_;
-    my $dict = {};
-    my $close_dict = sub { $dispatch = $restore };
+  my $close_dict = sub {
+    $dict = pop @dict_stack;
+    $dispatch = pop @dispatch_stack;
+  };
 
-    # Forward declare for mutual references.
-    my ($key_mode, $val_mode);
+  my $close_array = sub {
+    $array = pop @array_stack;
+    $dispatch = pop @dispatch_stack;
+  };
 
-    # --- Key mode closures ---
-    my $key_plain_name = sub {
-      $key = $2;
-      $dispatch = $val_mode;
-    };
+  # ===================================================================
+  # Dict key-mode closures (index 6-22).
+  # Only name tokens are valid; everything else is an error.
+  # ===================================================================
+  my $key_plain_name = sub {
+    $key = $2;
+    $dispatch = $val_mode;
+  };
 
-    my $key_hex_name = sub {
-      $key = $2;
-      $key =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/geo;
-      $dispatch = $val_mode;
-    };
+  my $key_hex_name = sub {
+    $key = $2;
+    $key =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/geo;
+    $dispatch = $val_mode;
+  };
 
-    # --- Val mode closures (store under $key, flip to key mode) ---
-    my $val_store_name = sub { $dict->{$key} = $1; $dispatch = $key_mode };
-    my $val_number     = sub { $dict->{$key} = $5; $dispatch = $key_mode };
-    my $val_clean_str  = sub { $dict->{$key} = $6; $dispatch = $key_mode };
+  my $key_missing_value = sub {
+    croak join(": ", $self->file || (),
+      "Byte offset $token_start: Missing value for key",
+      " \"$key\" before \">>\"!\n");
+  };
 
-    my $val_dirty_str = sub {
-      my $v = $7;
-      $v =~ s/\\$n//go;
-      $v =~ s/$n/\n/go;
-      $dict->{$key} = $v;
-      $dispatch = $key_mode;
-    };
+  # ===================================================================
+  # Dict val-mode closures (index 6-22).
+  # ===================================================================
+  my $val_name  = sub { $dict->{$key} = $1;  $dispatch = $key_mode };
+  my $val_num   = sub { $dict->{$key} = $5;  $dispatch = $key_mode };
+  my $val_cstr  = sub { $dict->{$key} = $6;  $dispatch = $key_mode };
+  my $val_bool  = sub { $dict->{$key} = $12; $dispatch = $key_mode };
+  my $val_null  = sub { $dict->{$key} = "null"; $dispatch = $key_mode };
+  my $val_token = sub { $dict->{$key} = $13; $dispatch = $key_mode };
 
-    my $val_bool  = sub { $dict->{$key} = $12;   $dispatch = $key_mode };
-    my $val_null  = sub { $dict->{$key} = "null"; $dispatch = $key_mode };
-    my $val_token = sub { $dict->{$key} = $13;    $dispatch = $key_mode };
-
-    my $val_hex = sub {
-      my $v = lc($14);
-      $v =~ s/$s+//go;
-      $v .= "0" if length($v) % 2 == 1;
-      $dict->{$key} = "<$v>";
-      $dispatch = $key_mode;
-    };
-
-    my $val_image = sub {
-      croak join(": ", $self->file || (),
-        "Byte offset $token_start: Invalid inline image data!\n")
-        unless $11;
-      $dict->{$key} = { -image => $11 };
-      $dispatch = $key_mode;
-    };
-
-    my $val_ref = sub {
-      my $id = join("-", $3, $4 || ());
-      if (my $resolved = $self->{-indirect_objects}{$id}) {
-        $dict->{$key} = $resolved->{data};
-      } else {
-        $dict->{$key} = \$id;
-        push @{$self->{-unresolved_refs}{$id}}, \$dict->{$key};
-      }
-      $dispatch = $key_mode;
-    };
-
-    # Store closures for << and [ pass the parent's post-flip state
-    # (key_mode) as the restore target for the child container.
-    my $val_store_dict  = sub { $dict->{$key} = &$new_dict($key_mode) };
-    my $val_store_array = sub { $dict->{$key} = &$new_array($key_mode) };
-
-    my $val_missing = sub {
-      croak join(": ", $self->file || (),
-        "Byte offset $token_start: Missing value for key",
-        " \"$key\" before \">>\"!\n");
-    };
-
-    $key_mode = [@static,
-      $key_plain_name,     #  6: plain name
-      $key_hex_name,       #  7: hex name
-      $key_error,          #  8: R
-      $key_error,          #  9: number
-      $key_error,          # 10: clean string
-      $key_error,          # 11: dirty string
-      $key_error,          # 12: boolean
-      $key_error,          # 13: null
-      $key_error,          # 14: token
-      $key_error,          # 15: hex string
-      $key_error,          # 16: image
-      $key_error,          # 17: store_dict
-      $key_error,          # 18: store_array
-      $close_dict,         # 19: close dict
-      $error_close_array,  # 20: close array
-      $restore->[21],      # 21: endobj (inherited)
-      $restore->[22],      # 22: stream (inherited)
-    ];
-
-    $val_mode = [@static,
-      $val_store_name,     #  6: plain name
-      $val_store_name,     #  7: hex name (store raw /Name)
-      $val_ref,            #  8: R
-      $val_number,         #  9: number
-      $val_clean_str,      # 10: clean string
-      $val_dirty_str,      # 11: dirty string
-      $val_bool,           # 12: boolean
-      $val_null,           # 13: null
-      $val_token,          # 14: token
-      $val_hex,            # 15: hex string
-      $val_image,          # 16: image
-      $val_store_dict,     # 17: store_dict
-      $val_store_array,    # 18: store_array
-      $val_missing,        # 19: close dict (missing value)
-      $error_close_array,  # 20: close array
-      $restore->[21],      # 21: endobj (inherited)
-      $restore->[22],      # 22: stream (inherited)
-    ];
-
+  my $val_dstr = sub {
+    my $v = $7;
+    $v =~ s/\\$n//go;
+    $v =~ s/$n/\n/go;
+    $dict->{$key} = $v;
     $dispatch = $key_mode;
-    return $dict;
   };
 
-  # ===================================================================
-  # new_array: create array context, set $dispatch, return array ref.
-  # ===================================================================
-  $new_array = sub {
-    my ($restore) = @_;
-    my $array = [];
+  my $val_hex = sub {
+    my $v = lc($14);
+    $v =~ s/$s+//go;
+    $v .= "0" if length($v) % 2 == 1;
+    $dict->{$key} = "<$v>";
+    $dispatch = $key_mode;
+  };
 
-    # Forward declare for self-reference in store_array.
-    my $arr_mode;
+  my $val_image = sub {
+    croak join(": ", $self->file || (),
+      "Byte offset $token_start: Invalid inline image data!\n")
+      unless $11;
+    $dict->{$key} = { -image => $11 };
+    $dispatch = $key_mode;
+  };
 
-    my $arr_store_name = sub { push @$array, $1 };
-    my $arr_number     = sub { push @$array, $5 };
-    my $arr_clean_str  = sub { push @$array, $6 };
+  my $val_ref = sub {
+    my $id = join("-", $3, $4 || ());
+    if (my $resolved = $self->{-indirect_objects}{$id}) {
+      $dict->{$key} = $resolved->{data};
+    } else {
+      $dict->{$key} = \$id;
+      push @{$self->{-unresolved_refs}{$id}}, \$dict->{$key};
+    }
+    $dispatch = $key_mode;
+  };
 
-    my $arr_dirty_str = sub {
-      my $v = $7;
-      $v =~ s/\\$n//go;
-      $v =~ s/$n/\n/go;
-      push @$array, $v;
-    };
+  my $val_store_dict = sub {
+    my $new = {};
+    $dict->{$key} = $new;
+    push @dispatch_stack, $key_mode;
+    push @dict_stack, $dict;
+    $dict = $new;
+    $dispatch = $key_mode;
+  };
 
-    my $arr_bool  = sub { push @$array, $12 };
-    my $arr_null  = sub { push @$array, "null" };
-    my $arr_token = sub { push @$array, $13 };
-
-    my $arr_hex = sub {
-      my $v = lc($14);
-      $v =~ s/$s+//go;
-      $v .= "0" if length($v) % 2 == 1;
-      push @$array, "<$v>";
-    };
-
-    my $arr_image = sub {
-      croak join(": ", $self->file || (),
-        "Byte offset $token_start: Invalid inline image data!\n")
-        unless $11;
-      push @$array, { -image => $11 };
-    };
-
-    my $arr_ref = sub {
-      my $id = join("-", $3, $4 || ());
-      if (my $resolved = $self->{-indirect_objects}{$id}) {
-        push @$array, $resolved->{data};
-      } else {
-        push @$array, \$id;
-        push @{$self->{-unresolved_refs}{$id}}, \$array->[-1];
-      }
-    };
-
-    my $arr_store_dict  = sub { push @$array, &$new_dict($arr_mode) };
-    my $arr_store_array = sub { push @$array, &$new_array($arr_mode) };
-
-    $arr_mode = [@static,
-      $arr_store_name,      #  6: plain name
-      $arr_store_name,      #  7: hex name (store raw /Name)
-      $arr_ref,             #  8: R
-      $arr_number,          #  9: number
-      $arr_clean_str,       # 10: clean string
-      $arr_dirty_str,       # 11: dirty string
-      $arr_bool,            # 12: boolean
-      $arr_null,            # 13: null
-      $arr_token,           # 14: token
-      $arr_hex,             # 15: hex string
-      $arr_image,           # 16: image
-      $arr_store_dict,      # 17: store_dict
-      $arr_store_array,     # 18: store_array
-      $error_close_dict,    # 19: close dict (error)
-      sub { $dispatch = $restore },  # 20: close array
-      $restore->[21],       # 21: endobj (inherited)
-      $restore->[22],       # 22: stream (inherited)
-    ];
-
+  my $val_store_array = sub {
+    my $new = [];
+    $dict->{$key} = $new;
+    push @dispatch_stack, $key_mode;
+    push @array_stack, $array;
+    $array = $new;
     $dispatch = $arr_mode;
-    return $array;
   };
 
   # ===================================================================
-  # Obj-mode closures (created once, reused for all obj contexts).
+  # Array-mode closures (index 6-22).
   # ===================================================================
-  my $obj_store_name = sub { $obj_value = $1; &$obj_register };
-  my $obj_number     = sub { $obj_value = $5; &$obj_register };
-  my $obj_clean_str  = sub { $obj_value = $6; &$obj_register };
+  my $arr_name  = sub { push @$array, $1 };
+  my $arr_num   = sub { push @$array, $5 };
+  my $arr_cstr  = sub { push @$array, $6 };
+  my $arr_bool  = sub { push @$array, $12 };
+  my $arr_null  = sub { push @$array, "null" };
+  my $arr_token = sub { push @$array, $13 };
 
-  my $obj_dirty_str = sub {
+  my $arr_dstr = sub {
+    my $v = $7;
+    $v =~ s/\\$n//go;
+    $v =~ s/$n/\n/go;
+    push @$array, $v;
+  };
+
+  my $arr_hex = sub {
+    my $v = lc($14);
+    $v =~ s/$s+//go;
+    $v .= "0" if length($v) % 2 == 1;
+    push @$array, "<$v>";
+  };
+
+  my $arr_image = sub {
+    croak join(": ", $self->file || (),
+      "Byte offset $token_start: Invalid inline image data!\n")
+      unless $11;
+    push @$array, { -image => $11 };
+  };
+
+  my $arr_ref = sub {
+    my $id = join("-", $3, $4 || ());
+    if (my $resolved = $self->{-indirect_objects}{$id}) {
+      push @$array, $resolved->{data};
+    } else {
+      push @$array, \$id;
+      push @{$self->{-unresolved_refs}{$id}}, \$array->[-1];
+    }
+  };
+
+  my $arr_store_dict = sub {
+    my $new = {};
+    push @$array, $new;
+    push @dispatch_stack, $arr_mode;
+    push @dict_stack, $dict;
+    $dict = $new;
+    $dispatch = $key_mode;
+  };
+
+  my $arr_store_array = sub {
+    my $new = [];
+    push @$array, $new;
+    push @dispatch_stack, $arr_mode;
+    push @array_stack, $array;
+    $array = $new;
+    $dispatch = $arr_mode;
+  };
+
+  # ===================================================================
+  # Obj-mode closures (index 6-22).
+  # Every store registers the indirect object immediately.
+  # ===================================================================
+  my $obj_name = sub { $obj_value = $1; &$obj_register };
+  my $obj_num  = sub { $obj_value = $5; &$obj_register };
+  my $obj_cstr = sub { $obj_value = $6; &$obj_register };
+  my $obj_bool = sub { $obj_value = $12; &$obj_register };
+  my $obj_null = sub { $obj_value = "null"; &$obj_register };
+  my $obj_tok  = sub { $obj_value = $13; &$obj_register };
+
+  my $obj_dstr = sub {
     my $v = $7;
     $v =~ s/\\$n//go;
     $v =~ s/$n/\n/go;
     $obj_value = $v;
     &$obj_register;
   };
-
-  my $obj_bool  = sub { $obj_value = $12;   &$obj_register };
-  my $obj_null  = sub { $obj_value = "null"; &$obj_register };
-  my $obj_token = sub { $obj_value = $13;    &$obj_register };
 
   my $obj_hex = sub {
     my $v = lc($14);
@@ -1342,8 +1301,23 @@ sub parse_objects {
     &$obj_register;
   };
 
-  my $obj_store_dict  = sub { $obj_value = &$new_dict($obj_mode);  &$obj_register };
-  my $obj_store_array = sub { $obj_value = &$new_array($obj_mode); &$obj_register };
+  my $obj_store_dict = sub {
+    $obj_value = my $new = {};
+    &$obj_register;
+    push @dispatch_stack, $obj_mode;
+    push @dict_stack, $dict;
+    $dict = $new;
+    $dispatch = $key_mode;
+  };
+
+  my $obj_store_array = sub {
+    $obj_value = my $new = [];
+    &$obj_register;
+    push @dispatch_stack, $obj_mode;
+    push @array_stack, $array;
+    $array = $new;
+    $dispatch = $arr_mode;
+  };
 
   my $obj_endobj = sub {
     undef $obj_id;
@@ -1360,11 +1334,9 @@ sub parse_objects {
       or croak join(": ", $self->file || (),
         "Byte offset $token_start: Stream dictionary missing!\n");
 
-    # XRef cross-reference streams are trailers.
     push @{$self->{-trailers}}, $stream
       if ($stream->{Type} // "") eq "/XRef";
 
-    # Validate stream length.
     my $matched_length = length $10;
     my $length = $stream->{Length};
     if (defined $length and !ref $length) {
@@ -1391,46 +1363,26 @@ sub parse_objects {
     push @{$self->{-streams}}, $stream;
 
     $self->filter_stream($stream) if $stream->{Filter};
-    $self->parse_object_stream($stream) if ($stream->{Type} // "") eq "/ObjStm";
+    $self->parse_object_stream($stream)
+      if ($stream->{Type} // "") eq "/ObjStm";
   };
 
-  $obj_mode = [@static,
-    $obj_store_name,    #  6: plain name
-    $obj_store_name,    #  7: hex name
-    $obj_ref,           #  8: R
-    $obj_number,        #  9: number
-    $obj_clean_str,     # 10: clean string
-    $obj_dirty_str,     # 11: dirty string
-    $obj_bool,          # 12: boolean
-    $obj_null,          # 13: null
-    $obj_token,         # 14: token
-    $obj_hex,           # 15: hex string
-    $obj_image,         # 16: image
-    $obj_store_dict,    # 17: store_dict
-    $obj_store_array,   # 18: store_array
-    $error_close_dict,  # 19: close dict (error)
-    $error_close_array, # 20: close array (error)
-    $obj_endobj,        # 21: endobj
-    $obj_stream,        # 22: stream
-  ];
-
   # ===================================================================
-  # Top-level dispatch.
+  # Top-level closures (index 6-22).
   # ===================================================================
-  my $top_store_name = sub { push @objects, $1 };
-  my $top_number     = sub { push @objects, $5 };
-  my $top_clean_str  = sub { push @objects, $6 };
+  my $top_name  = sub { push @objects, $1 };
+  my $top_num   = sub { push @objects, $5 };
+  my $top_cstr  = sub { push @objects, $6 };
+  my $top_bool  = sub { push @objects, $12 };
+  my $top_null  = sub { push @objects, "null" };
+  my $top_token = sub { push @objects, $13 };
 
-  my $top_dirty_str = sub {
+  my $top_dstr = sub {
     my $v = $7;
     $v =~ s/\\$n//go;
     $v =~ s/$n/\n/go;
     push @objects, $v;
   };
-
-  my $top_bool  = sub { push @objects, $12 };
-  my $top_null  = sub { push @objects, "null" };
-  my $top_token = sub { push @objects, $13 };
 
   my $top_hex = sub {
     my $v = lc($14);
@@ -1456,27 +1408,125 @@ sub parse_objects {
     }
   };
 
-  my $top_store_dict  = sub { push @objects, &$new_dict($top_dispatch) };
-  my $top_store_array = sub { push @objects, &$new_array($top_dispatch) };
+  my $top_store_dict = sub {
+    my $new = {};
+    push @objects, $new;
+    push @dispatch_stack, $top_dispatch;
+    push @dict_stack, $dict;
+    $dict = $new;
+    $dispatch = $key_mode;
+  };
+
+  my $top_store_array = sub {
+    my $new = [];
+    push @objects, $new;
+    push @dispatch_stack, $top_dispatch;
+    push @array_stack, $array;
+    $array = $new;
+    $dispatch = $arr_mode;
+  };
+
+  # ===================================================================
+  # Build dispatch arrays: [@static, dynamic closures 6..22].
+  # ===================================================================
+  $key_mode = [@static,
+    $key_plain_name,     #  6
+    $key_hex_name,       #  7
+    $key_error,          #  8: R
+    $key_error,          #  9: number
+    $key_error,          # 10: clean string
+    $key_error,          # 11: dirty string
+    $key_error,          # 12: boolean
+    $key_error,          # 13: null
+    $key_error,          # 14: token
+    $key_error,          # 15: hex string
+    $key_error,          # 16: image
+    $key_error,          # 17: <<
+    $key_error,          # 18: [
+    $close_dict,         # 19: >>
+    $error_close_array,  # 20: ]
+    $error_endobj,       # 21: endobj
+    $error_stream,       # 22: stream
+  ];
+
+  $val_mode = [@static,
+    $val_name,           #  6
+    $val_name,           #  7
+    $val_ref,            #  8
+    $val_num,            #  9
+    $val_cstr,           # 10
+    $val_dstr,           # 11
+    $val_bool,           # 12
+    $val_null,           # 13
+    $val_token,          # 14
+    $val_hex,            # 15
+    $val_image,          # 16
+    $val_store_dict,     # 17
+    $val_store_array,    # 18
+    $key_missing_value,  # 19: >> (missing value)
+    $error_close_array,  # 20
+    $error_endobj,       # 21
+    $error_stream,       # 22
+  ];
+
+  $arr_mode = [@static,
+    $arr_name,           #  6
+    $arr_name,           #  7
+    $arr_ref,            #  8
+    $arr_num,            #  9
+    $arr_cstr,           # 10
+    $arr_dstr,           # 11
+    $arr_bool,           # 12
+    $arr_null,           # 13
+    $arr_token,          # 14
+    $arr_hex,            # 15
+    $arr_image,          # 16
+    $arr_store_dict,     # 17
+    $arr_store_array,    # 18
+    $error_close_dict,   # 19
+    $close_array,        # 20
+    $error_endobj,       # 21
+    $error_stream,       # 22
+  ];
+
+  $obj_mode = [@static,
+    $obj_name,           #  6
+    $obj_name,           #  7
+    $obj_ref,            #  8
+    $obj_num,            #  9
+    $obj_cstr,           # 10
+    $obj_dstr,           # 11
+    $obj_bool,           # 12
+    $obj_null,           # 13
+    $obj_tok,            # 14
+    $obj_hex,            # 15
+    $obj_image,          # 16
+    $obj_store_dict,     # 17
+    $obj_store_array,    # 18
+    $error_close_dict,   # 19
+    $error_close_array,  # 20
+    $obj_endobj,         # 21
+    $obj_stream,         # 22
+  ];
 
   $top_dispatch = [@static,
-    $top_store_name,    #  6: plain name
-    $top_store_name,    #  7: hex name
-    $top_ref,           #  8: R
-    $top_number,        #  9: number
-    $top_clean_str,     # 10: clean string
-    $top_dirty_str,     # 11: dirty string
-    $top_bool,          # 12: boolean
-    $top_null,          # 13: null
-    $top_token,         # 14: token
-    $top_hex,           # 15: hex string
-    $top_image,         # 16: image
-    $top_store_dict,    # 17: store_dict
-    $top_store_array,   # 18: store_array
-    $error_close_dict,  # 19: close dict (error)
-    $error_close_array, # 20: close array (error)
-    $error_endobj,      # 21: endobj (error)
-    $error_stream,      # 22: stream (error)
+    $top_name,           #  6
+    $top_name,           #  7
+    $top_ref,            #  8
+    $top_num,            #  9
+    $top_cstr,           # 10
+    $top_dstr,           # 11
+    $top_bool,           # 12
+    $top_null,           # 13
+    $top_token,          # 14
+    $top_hex,            # 15
+    $top_image,          # 16
+    $top_store_dict,     # 17
+    $top_store_array,    # 18
+    $error_close_dict,   # 19
+    $error_close_array,  # 20
+    $error_endobj,       # 21
+    $error_stream,       # 22
   ];
 
   $dispatch = $top_dispatch;
@@ -1516,7 +1566,6 @@ sub parse_objects {
     "Parse error: Unclosed container!\n")
     if $dispatch != $top_dispatch;
 
-  # Return parsed objects.
   return wantarray ? @objects : $objects[0];
 }
 
