@@ -1045,24 +1045,20 @@ sub parse_objects {
       ": Odd number of elements in dictionary!\n")
       if @{$pairs} % 2;
 
-    # Validate and strip leading / from keys.
+    # Single pass: strip leading / from keys, insert into dict,
+    # and re-register any unresolved forward refs.
+    my $dict = $objects->[-1];
     for (my $i = 0; $i < @{$pairs}; $i += 2) {
-      $pairs->[$i] =~ s/\A\///
+      my $key = $pairs->[$i];
+      my $val = $pairs->[$i+1];
+      substr($key, 0, 1, "") eq "/"
         or croak join(": ", $self->file || (),
           "Byte offset " . pos() .
-          ": Expected name for dictionary key, got \"$pairs->[$i]\"!\n");
-    }
-
-    # Bulk-assign to the dict hashref that << pushed onto the parent.
-    %{$objects->[-1]} = @{$pairs};
-
-    # Re-register any unresolved forward refs with their hash-slot
-    # locations, since bulk assignment copied the values out of the
-    # temp pair list (whose slots are now stale).
-    my $dict = $objects->[-1];
-    for (my $i = 1; $i < @{$pairs}; $i += 2) {
-      if (ref $pairs->[$i] eq 'SCALAR') {
-        push @{$self->{-unresolved_refs}{${$pairs->[$i]}}}, \$dict->{$pairs->[$i-1]};
+          ": Expected name for dictionary key, got \"/$key\"!\n");
+      $dict->{$key} = $val;
+      if (ref $val eq 'SCALAR') {
+        push @{$self->{-unresolved_refs}{${$val}}},
+          \$dict->{$key};
       }
     }
 
