@@ -1013,12 +1013,12 @@ sub parse_objects {
   # ===================================================================
   while (m{\G((?>$ws*))(*MARK:0)(?|
       (\/[^$ss()<>\[\]{}/%\#]*(?:\#(*:1)[^$ss()<>\[\]{}/%\#]*)*)
-     |((?>(\d+)$ws+)0*(\d*)$ws+(?:R(*:2)|obj(*:3)))
-     |((?>[+-]?(?=\.?\d)\d*(?:\.\d*)?))
+     |((?>\d+)(?!\.))(?:((?>$ws+)0*(\d*)$ws+(?:R(*:2)|obj(*:3))))?
      |>>(*:4)
      |\](*:5)
      |<<(*:6)
      |\[(*:7)
+     |((?>[+-]?(?=\.?\d)\d*(?:\.\d*)?))
      |(\([^\\()\r\n]*\))
      |(\((?:(?>[^\\()]+)|\\.|(?-1))*\))(*:8)
      |startxref$ws+(\d+)(*:9)
@@ -1042,7 +1042,7 @@ sub parse_objects {
     }
     elsif ($REGMARK == 2) {
       # R — indirect reference (975,037 calls).
-      my $id = $4 ? "$3-$4" : $3;
+      my $id = $4 ? "$2-$4" : $2;
       if (my $resolved = $self->{-indirect_objects}{$id}) {
         push @{$objects}, $resolved->{data};
       } else {
@@ -1118,8 +1118,8 @@ sub parse_objects {
     }
     elsif ($REGMARK == 3) {
       # obj — indirect object definition (110,776 calls).
-      $obj_id     = $4 ? "$3-$4" : $3;
-      $obj_offset = pos() - length($2);
+      $obj_id     = $4 ? "$2-$4" : $2;
+      $obj_offset = pos() - length($2) - length($3);
     }
     elsif ($REGMARK == 1) {
       # Name containing # — hex decode (14,281 calls).
