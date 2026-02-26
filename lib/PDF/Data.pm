@@ -934,48 +934,30 @@ sub get_hash_node {
   return $hash;
 }
 
-# Closure-based parse_objects redesign.
-# All closures pre-built once.  Container nesting via explicit stacks.
-# Whitespace consumed as non-dispatched prefix; $token_start computed
-# lazily only by closures that need it.
+# Branch-reset parse_objects with hot-path push.
+# Whitespace consumed as non-dispatched prefix ($1).
+# Branch reset (?|...) captures primary token into $2 for all alternatives.
+# (*MARK:0) resets $REGMARK each match; unmarked tokens go through
+# the hot path (bare push).  Marked tokens use inlined if/elsif.
+# Container nesting via explicit @stack; $objects swapped per context.
 #
-# (*MARK) dispatch indices:
+# (*MARK) indices (0 = unmarked/hot path):
+#  1 = name with # (hex decode)   9 = startxref
+#  2 = R (indirect reference)    10 = endobj
+#  3 = obj (object definition)   11 = stream
+#  4 = >> (close dictionary)     12 = ID (inline image)
+#  5 = ] (close array)           13 = xref (no-op)
+#  6 = << (open dictionary)      14 = trailer
+#  7 = [ (open array)            15 = hex string
+#  8 = dirty string              16 = parse error
 #
-# Static (0-4) — same in every dispatch array:
-#  0 = parse error
-#  1 = obj
-#  2 = startxref
-#  3 = xref
-#  4 = trailer
-#
-# Dynamic (5-21) — vary per context:
-#  5 = plain name       13 = other token
-#  6 = hex-encoded name 14 = hex string
-#  7 = R                15 = inline image
-#  8 = number           16 = store_dict  (<<)
-#  9 = clean string     17 = store_array ([)
-# 10 = dirty string     18 = close_dict  (>>)
-# 11 = boolean          19 = close_array (])
-# 12 = null             20 = endobj
-#                       21 = stream
-#
-# Capture variables ($1 = whitespace prefix, rest shifted by 1):
-#  $1  = leading whitespace
-#  $2  = /Name token (with /)
-#  $3  = Name (without /)
-#  $4  = object number
-#  $5  = generation number
-#  $6  = number value
-#  $7  = clean string (no parens/backslash/CR/LF)
-#  $8  = dirty string (nested parens/escapes/newlines)
-#  $9  = startxref offset
-#  $10 = stream newline (\r?\n)
-#  $11 = stream data
-#  $12 = inline image data
-#  $13 = boolean (true|false)
-#  $14 = other token
-#  $15 = hex string content
-#  $16 = parse error text
+# Capture variables (branch reset — $2 is always primary token):
+#  $1 = leading whitespace (all alternatives)
+#  $2 = primary token value (all alternatives via branch reset)
+#  For integer/ref/obj pattern only:
+#    $2 = object/integer number
+#    $3 = compound tail (ws + gen + ws + R/obj) — for offset calc
+#    $4 = generation number (empty string if zero)
 
 sub parse_objects {
   my ($me, $data, $start_pos) = @_;
