@@ -983,48 +983,53 @@ sub parse_objects {
   pos = $start_pos || 0;
 
   # ===================================================================
-  # Main parser loop.
+  # Main parser loop — batch accumulation with (*ACCEPT).
   #
-  # (*MARK:0) resets $REGMARK to "0" (falsy) at the start of each match.
-  # Unmarked alternatives go through the hot path (bare push).
-  # Marked alternatives are handled by inlined if/elsif, ordered by
-  # frequency (most common marks first) to minimize branch cost.
+  # The inner (+) loop matches simple tokens without leaving the regex
+  # engine.  When a marked (special) token is encountered, (*ACCEPT)
+  # terminates the match immediately.  $2 contains the entire batch
+  # (simple tokens + special token); $3 is the last token (special if
+  # $REGMARK is set, last simple if not).  The batch of simple tokens
+  # is split and pushed before the special token is handled.
   #
-  # Branch reset (?|...) ensures $2 is always the primary token value
-  # for all alternatives, enabling the uniform hot path.
+  # (*MARK:0) resets $REGMARK to "0" (falsy) at the start of each
+  # match.  If only simple tokens remain (end of input), $REGMARK
+  # stays 0 and all of $2 is split/pushed.
+  #
+  # Capture variables:
+  #  $1 = leading whitespace
+  #  $2 = full batch (simple tokens + special token)
+  #  $3 = last token (special token if $REGMARK set)
+  #  $4, $5 = sub-captures within branch reset alternatives
   # ===================================================================
-  while (m{\G((?>$ws*))(*MARK:0)(?|
-      ((?>\d+)(?!\.))(?:((?>$ws+)0*(\d*)$ws+(?:R(*:2)|obj(*:3))))?
-     |(\/[^$ss()<>\[\]{}/%\#]*(?:\#(*:1)[^$ss()<>\[\]{}/%\#]*)*)
-     |>>(*:4)
-     |\](*:5)
-     |<<(*:6)
-     |\[(*:7)
-     |((?>[+-]?(?=\.?\d)\d*(?:\.\d*)?))
-     |(\([^\\()\r\n]*\))
-     |(\((?:(?>[^\\()]+)|\\.|(?-1))*\))(*:8)
-     |startxref$ws+(\d+)(*:9)
-     |endobj(*:10)
-     |stream(*:11)
-     |ID(?s:$s(.*?)(?:\r\n|$s)?EI$s)?(*:12)
-     |xref(?:$ws*\d+$ws+\d+$n(?:\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))*)*(*:13)
-     |(true|false)
-     |(null)
-     |trailer(*:14)
-     |([^$ss()<>\[\]{}/%]+)
-     |<([0-9A-Fa-f$ss]*)>(*:15)
-     |([^\r\n]+)(*:16)
-  )}xgco) {
-    unless ($REGMARK) {
-      # -----------------------------------------------------------
-      # Hot path: plain token (name, number, clean string, boolean,
-      # null, generic token).  ~69% of all tokens.
-      # -----------------------------------------------------------
-      push @{$objects}, $2;
-    }
-    elsif ($REGMARK == 2) {
+  while (m{\G((?>$ws*))(*MARK:0)((?:(?>$ws*)((?|
+      ((?>\d+)(?!\.))(?:(?>$ws+)0*(\d*)$ws+(?:R(*MARK:2)(*ACCEPT)|obj(*MARK:3)(*ACCEPT)))?
+     |\/[^$ss()<>\[\]{}\/%\#]*(?:\#[^$ss()<>\[\]{}\/%]*(*MARK:1)(*ACCEPT))?
+     |>>(*MARK:4)(*ACCEPT)
+     |\](*MARK:5)(*ACCEPT)
+     |<<(*MARK:6)(*ACCEPT)
+     |\[(*MARK:7)(*ACCEPT)
+     |(?>[+-]?(?=\.?\d)\d*(?:\.\d*)?)
+     |\([^$ss\\\/()]*(?:\)|[$ss][^\\()\r\n]*\)(*MARK:17)(*ACCEPT))
+     |(\((?:(?>[^\\()]+)|\\.|(?-1))*\))(*MARK:8)(*ACCEPT)
+     |startxref$ws+(\d+)(*MARK:9)(*ACCEPT)
+     |endobj(*MARK:10)(*ACCEPT)
+     |stream(*MARK:11)(*ACCEPT)
+     |ID(?s:$s(.*?)(?:\r\n|$s)?EI$s)?(*MARK:12)(*ACCEPT)
+     |xref(?:$ws*\d+$ws+\d+$n(?:\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))*)*(*MARK:13)(*ACCEPT)
+     |(?:true|false)
+     |null
+     |trailer(*MARK:14)(*ACCEPT)
+     |[^$ss()<>\[\]{}\/%]+
+     |<([0-9A-Fa-f$ss]*)>(*MARK:15)(*ACCEPT)
+     |([^\r\n]+)(*MARK:16)(*ACCEPT)
+  )))+)}xgco) {
+    # Batch-push simple tokens preceding the special token (if any).
+    push @{$objects}, split /(?:$ws+|(?=[(\\\/])|(?<=\)))/o, $REGMARK ? substr($2, 0, length($2) - length($3)) : $2;
+
+    if ($REGMARK == 2) {
       # R — indirect reference (975,037 calls).
-      my $id = $4 ? "$2-$4" : $2;
+      my $id = $5 ? "$4-$5" : $4;
       if (my $resolved = $self->{-indirect_objects}{$id}) {
         push @{$objects}, $resolved->{data};
       } else {
@@ -1100,16 +1105,16 @@ sub parse_objects {
     }
     elsif ($REGMARK == 3) {
       # obj — indirect object definition (110,776 calls).
-      $obj_id     = $4 ? "$2-$4" : $2;
-      $obj_offset = pos() - length($2) - length($3);
+      $obj_id     = $5 ? "$4-$5" : $4;
+      $obj_offset = pos() - length($3);
     }
     elsif ($REGMARK == 1) {
       # Name containing # — hex decode (14,281 calls).
-      my $name = $2;
+      my $name = $3;
       $name =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/ge;
       croak join(": ", $self->file || (),
         "Byte offset " . (pos() - length $name) .
-        ": Invalid hex escape in name \"$2\"!\n")
+        ": Invalid hex escape in name \"$3\"!\n")
         if index($name, '#') >= 0 || index($name, "\x00") >= 0;
       push @{$objects}, $name;
     }
@@ -1174,16 +1179,20 @@ sub parse_objects {
       $self->parse_object_stream($stream)
         if ($stream->{Type} // "") eq "/ObjStm";
     }
+    elsif ($REGMARK == 17) {
+      # Clean string with whitespace (push as-is).
+      push @{$objects}, $3;
+    }
     elsif ($REGMARK == 8) {
       # Dirty string — escape processing (4,038 calls).
-      my $v = $2;
+      my $v = $3;
       $v =~ s/\\$n//go;
       $v =~ s/$n/\n/go;
       push @{$objects}, $v;
     }
     elsif ($REGMARK == 9) {
       # startxref (2 calls).
-      $self->{-startxref} = $2;
+      $self->{-startxref} = $4;
     }
     elsif ($REGMARK == 14) {
       # trailer (2 calls).
@@ -1191,7 +1200,7 @@ sub parse_objects {
     }
     elsif ($REGMARK == 15) {
       # Hex string (2 calls).
-      my $v = lc($2);
+      my $v = lc($4);
       $v =~ s/$s+//go;
       $v .= "0" if length($v) % 2 == 1;
       push @{$objects}, "<$v>";
@@ -1200,8 +1209,8 @@ sub parse_objects {
       # ID — inline image (0 calls in test file).
       croak join(": ", $self->file || (),
         "Byte offset " . pos() . ": Invalid inline image data!\n")
-        unless defined $2;
-      push @{$objects}, { -image => $2 };
+        unless defined $4;
+      push @{$objects}, { -image => $4 };
     }
     elsif ($REGMARK == 13) {
       # xref — no-op, consumed by regex.
@@ -1209,7 +1218,7 @@ sub parse_objects {
     elsif ($REGMARK == 16) {
       # Parse error (catch-all).
       croak join(": ", $self->file || (),
-        "Byte offset " . pos() . ": Parse error on input: \"$2\"\n");
+        "Byte offset " . pos() . ": Parse error on input: \"$4\"\n");
     }
   }
 
