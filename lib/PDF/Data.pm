@@ -993,25 +993,25 @@ sub parse_objects {
   # Branch reset (?|...) ensures $2 is always the primary token value
   # for all alternatives, enabling the uniform hot path.
   # ===================================================================
-  while (m{\G((?>$ws*))(*MARK:0)(?|
-      ((?>\d+)(?!\.))(?:((?>$ws+)0*(\d*)$ws+(?:R(*MARK:2)|obj(*MARK:3))))?
-     |((?>\/[^$ss()<>\[\]{}/%\#]*)(?>\#(*MARK:1)[^$ss()<>\[\]{}/%]*)?)
+  while (m{\G((?>$ws*))(?|
+      ((?>\d+)(?!\.))(?:((?>$ws+)0*(\d*)$ws+(?:R(*MARK:2)|obj(*MARK:3)))|(*MARK:0))
+     |((?>\/[^$ss()<>\[\]{}/%\#]*)(?>\#(*MARK:1)[^$ss()<>\[\]{}/%]*|(*MARK:0)))
      |>>(*MARK:4)
      |\](*MARK:5)
      |<<(*MARK:6)
      |\[(*MARK:7)
-     |((?>[+-]?(?=\.?\d)\d*(?:\.\d*)?))
-     |(\([^\\()\r\n]*\))
+     |((?>[+-]?(?=\.?\d)\d*(?:\.\d*)?)(*MARK:0))
+     |(\([^\\()\r\n]*\)(*MARK:0))
      |(\((?:(?>[^\\()]+)|\\.|(?-1))*\))(*MARK:8)
      |startxref$ws+(\d+)(*MARK:9)
      |endobj(*MARK:10)
      |stream(*MARK:11)
      |ID(?s:$s(.*?)(?:\r\n|$s)?EI$s)?(*MARK:12)
      |xref(?:$ws*\d+$ws+\d+$n(?:\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))*)*(*MARK:13)
-     |(true|false)
-     |(null)
+     |(true|false)(*MARK:0)
+     |(null)(*MARK:0)
      |trailer(*MARK:14)
-     |([^$ss()<>\[\]{}/%]+)
+     |([^$ss()<>\[\]{}/%]+)(*MARK:0)
      |<([0-9A-Fa-f$ss]*)>(*MARK:15)
      |([^\r\n]+)(*MARK:16)
   )}xgco) {
