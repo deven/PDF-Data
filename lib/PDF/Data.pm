@@ -969,13 +969,11 @@ sub get_hash_node {
 #  $7  = clean string (no parens/backslash/CR/LF)
 #  $8  = dirty string (nested parens/escapes/newlines)
 #  $9  = startxref offset
-#  $10 = stream newline (\r?\n)
-#  $11 = stream data
-#  $12 = inline image data
-#  $13 = boolean (true|false)
-#  $14 = other token
-#  $15 = hex string content
-#  $16 = parse error text
+#  $10 = inline image data
+#  $11 = boolean (true|false)
+#  $12 = other token
+#  $13 = hex string content
+#  $14 = parse error text
 
 sub parse_objects {
   my ($me, $data, $start_pos) = @_;
@@ -1071,7 +1069,7 @@ sub parse_objects {
   my $parse_error = sub {
     my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
-      "Byte offset $start: Parse error on input: \"$16\"\n");
+      "Byte offset $start: Parse error on input: \"$14\"\n");
   };
 
   my $handle_obj = sub {
@@ -1145,9 +1143,9 @@ sub parse_objects {
   my $val_name  = sub { $dict->{$key} = $2;    $dispatch = $key_mode };
   my $val_num   = sub { $dict->{$key} = $6;    $dispatch = $key_mode };
   my $val_cstr  = sub { $dict->{$key} = $7;    $dispatch = $key_mode };
-  my $val_bool  = sub { $dict->{$key} = $13;   $dispatch = $key_mode };
+  my $val_bool  = sub { $dict->{$key} = $11;   $dispatch = $key_mode };
   my $val_null  = sub { $dict->{$key} = "null"; $dispatch = $key_mode };
-  my $val_token = sub { $dict->{$key} = $14;   $dispatch = $key_mode };
+  my $val_token = sub { $dict->{$key} = $12;   $dispatch = $key_mode };
 
   my $val_dstr = sub {
     my $v = $8;
@@ -1158,7 +1156,7 @@ sub parse_objects {
   };
 
   my $val_hex = sub {
-    my $v = lc($15);
+    my $v = lc($13);
     $v =~ s/$s+//go;
     $v .= "0" if length($v) % 2 == 1;
     $dict->{$key} = "<$v>";
@@ -1169,8 +1167,8 @@ sub parse_objects {
     my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
       "Byte offset $start: Invalid inline image data!\n")
-      unless $12;
-    $dict->{$key} = { -image => $12 };
+      unless $10;
+    $dict->{$key} = { -image => $10 };
     $dispatch = $key_mode;
   };
 
@@ -1209,9 +1207,9 @@ sub parse_objects {
   my $arr_name  = sub { push @$array, $2 };
   my $arr_num   = sub { push @$array, $6 };
   my $arr_cstr  = sub { push @$array, $7 };
-  my $arr_bool  = sub { push @$array, $13 };
+  my $arr_bool  = sub { push @$array, $11 };
   my $arr_null  = sub { push @$array, "null" };
-  my $arr_token = sub { push @$array, $14 };
+  my $arr_token = sub { push @$array, $12 };
 
   my $arr_dstr = sub {
     my $v = $8;
@@ -1221,7 +1219,7 @@ sub parse_objects {
   };
 
   my $arr_hex = sub {
-    my $v = lc($15);
+    my $v = lc($13);
     $v =~ s/$s+//go;
     $v .= "0" if length($v) % 2 == 1;
     push @$array, "<$v>";
@@ -1231,8 +1229,8 @@ sub parse_objects {
     my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
       "Byte offset $start: Invalid inline image data!\n")
-      unless $12;
-    push @$array, { -image => $12 };
+      unless $10;
+    push @$array, { -image => $10 };
   };
 
   my $arr_ref = sub {
@@ -1269,9 +1267,9 @@ sub parse_objects {
   my $obj_name = sub { $obj_value = $2; &$obj_register };
   my $obj_num  = sub { $obj_value = $6; &$obj_register };
   my $obj_cstr = sub { $obj_value = $7; &$obj_register };
-  my $obj_bool = sub { $obj_value = $13; &$obj_register };
+  my $obj_bool = sub { $obj_value = $11; &$obj_register };
   my $obj_null = sub { $obj_value = "null"; &$obj_register };
-  my $obj_tok  = sub { $obj_value = $14; &$obj_register };
+  my $obj_tok  = sub { $obj_value = $12; &$obj_register };
 
   my $obj_dstr = sub {
     my $v = $8;
@@ -1282,7 +1280,7 @@ sub parse_objects {
   };
 
   my $obj_hex = sub {
-    my $v = lc($15);
+    my $v = lc($13);
     $v =~ s/$s+//go;
     $v .= "0" if length($v) % 2 == 1;
     $obj_value = "<$v>";
@@ -1293,8 +1291,8 @@ sub parse_objects {
     my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
       "Byte offset $start: Invalid inline image data!\n")
-      unless $12;
-    $obj_value = { -image => $12 };
+      unless $10;
+    $obj_value = { -image => $10 };
     &$obj_register;
   };
 
@@ -1334,7 +1332,7 @@ sub parse_objects {
 
   my $obj_stream = sub {
     my $start = $match_start + length $1;
-    my $sstart = $start + 6 + length $10;
+    my $sstart = pos();
     defined $obj_id
       or croak join(": ", $self->file || (),
         "Byte offset $start: stream without obj!\n");
@@ -1346,21 +1344,39 @@ sub parse_objects {
     push @{$self->{-trailers}}, $stream
       if ($stream->{Type} // "") eq "/XRef";
 
-    my $matched_length = length $11;
+    # Determine stream data length.
     my $length = $stream->{Length};
     if (defined $length and !ref $length) {
-      if ($length > $matched_length) {
-        carp join(": ", $self->file || (),
-          "Byte offset $start: Stream #$obj_id:",
-          " Declared length $length exceeds actual stream data!\n");
-        $length = $matched_length;
+      # Verify declared length: check for "endstream" at expected position.
+      pos = $sstart + $length;
+      unless (/\G(?:$n)?endstream$s/gco) {
+        # Declared length incorrect — fall back to regex scan.
+        pos = $sstart;
+        if (/\G((?>[^e]+|(?!endstream$s)e)*)endstream$s/gc) {
+          my $matched_length = $+[1] - $-[1];
+          carp join(": ", $self->file || (),
+            "Byte offset $start: Stream #$obj_id:",
+            " Declared length $length incorrect (actual $matched_length)!\n")
+            if $length > $matched_length;
+          $length = $matched_length if $length > $matched_length;
+        } else {
+          croak join(": ", $self->file || (),
+            "Byte offset $start: Stream #$obj_id: endstream not found!\n");
+        }
       }
     } else {
+      # No valid length — scan with regex.
       carp join(": ", $self->file || (),
         "Byte offset $start: Stream #$obj_id:",
         " Stream length not found in metadata!\n")
         unless defined $length;
-      $length = $matched_length;
+      pos = $sstart;
+      if (/\G((?>[^e]+|(?!endstream$s)e)*)endstream$s/gc) {
+        $length = $+[1] - $-[1];
+      } else {
+        croak join(": ", $self->file || (),
+          "Byte offset $start: Stream #$obj_id: endstream not found!\n");
+      }
     }
 
     $stream->{-data}    = substr($_, $sstart, $length) // "";
@@ -1382,9 +1398,9 @@ sub parse_objects {
   my $top_name  = sub { push @objects, $2 };
   my $top_num   = sub { push @objects, $6 };
   my $top_cstr  = sub { push @objects, $7 };
-  my $top_bool  = sub { push @objects, $13 };
+  my $top_bool  = sub { push @objects, $11 };
   my $top_null  = sub { push @objects, "null" };
-  my $top_token = sub { push @objects, $14 };
+  my $top_token = sub { push @objects, $12 };
 
   my $top_dstr = sub {
     my $v = $8;
@@ -1394,7 +1410,7 @@ sub parse_objects {
   };
 
   my $top_hex = sub {
-    my $v = lc($15);
+    my $v = lc($13);
     $v =~ s/$s+//go;
     $v .= "0" if length($v) % 2 == 1;
     push @objects, "<$v>";
@@ -1404,8 +1420,8 @@ sub parse_objects {
     my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
       "Byte offset $start: Invalid inline image data!\n")
-      unless $12;
-    push @objects, { -image => $12 };
+      unless $10;
+    push @objects, { -image => $10 };
   };
 
   my $top_ref = sub {
@@ -1557,10 +1573,10 @@ sub parse_objects {
     |<<(*:16)
     |\[(*:17)
     |(\([^\\()\r\n]*\))(*:9)
-    |(\((?:(?>[^\\()]+)|\\.|(?8))*\))(*:10)
+    |(\((?:(?>[^\\()]+)|\\.|(?-1))*\))(*:10)
     |startxref$ws+(\d+)(*:2)
     |endobj(*:20)
-    |stream(\r?\n)((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s(*:21)
+    |stream(?:\r?\n)?(*:21)
     |ID(?s:$s(.*?)(?:\r\n|$s)?EI$s)?(*:15)
     |xref(?:$ws*\d+$ws+\d+$n(?:\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))*)*(*:3)
     |(true|false)(*:11)
