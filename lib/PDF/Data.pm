@@ -959,23 +959,23 @@ sub get_hash_node {
 # 12 = null             20 = endobj
 #                       21 = stream
 #
-# Capture variables ($1 = whitespace prefix, branch reset pattern makes each alternative start with $2)
-#  $1        = leading whitespace
-#  $2        = /Name token (with /)
-#  $3        = Name (without /)
-#  $4  -> $2 = object number
-#  $5  -> $3 = generation number
-#  $6  -> $2 = number value
-#  $7  -> $2 = clean string (no parens/backslash/CR/LF)
-#  $8  -> $2 = dirty string (nested parens/escapes/newlines)
-#  $9  -> $2 = startxref offset
-#  $10 -> $2 = stream newline (\r?\n)
-#  $11 -> $3 = stream data
-#  $12 -> $2 = inline image data
-#  $13 -> $2 = boolean (true|false)
-#  $14 -> $2 = other token
-#  $15 -> $2 = hex string content
-#  $16 -> $2 = parse error text
+# Capture variables ($1 = whitespace prefix, rest shifted by 1):
+#  $1  = leading whitespace
+#  $2  = /Name token (with /)
+#  $3  = Name (without /)
+#  $4  = object number
+#  $5  = generation number
+#  $6  = number value
+#  $7  = clean string (no parens/backslash/CR/LF)
+#  $8  = dirty string (nested parens/escapes/newlines)
+#  $9  = startxref offset
+#  $10 = stream newline (\r?\n)
+#  $11 = stream data
+#  $12 = inline image data
+#  $13 = boolean (true|false)
+#  $14 = other token
+#  $15 = hex string content
+#  $16 = parse error text
 
 sub parse_objects {
   my ($me, $data, $start_pos) = @_;
@@ -1071,17 +1071,17 @@ sub parse_objects {
   my $parse_error = sub {
     my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
-      "Byte offset $start: Parse error on input: \"$2\"\n");
+      "Byte offset $start: Parse error on input: \"$16\"\n");
   };
 
   my $handle_obj = sub {
-    $obj_id     = join("-", $2, $3 || ());
+    $obj_id     = join("-", $4, $5 || ());
     $obj_offset = $match_start + length $1;
     $prev_obj_dispatch = $dispatch;
     $dispatch = $obj_mode;
   };
 
-  my $handle_startxref = sub { $self->{-startxref} = $2 };
+  my $handle_startxref = sub { $self->{-startxref} = $9 };
 
   my $handle_xref = sub { };
 
@@ -1142,15 +1142,15 @@ sub parse_objects {
   # ===================================================================
   # Dict val-mode closures (index 5-21).
   # ===================================================================
-  my $val_name  = sub { $dict->{$key} = $2;     $dispatch = $key_mode };
-  my $val_num   = sub { $dict->{$key} = $2;     $dispatch = $key_mode };
-  my $val_cstr  = sub { $dict->{$key} = $2;     $dispatch = $key_mode };
-  my $val_bool  = sub { $dict->{$key} = $2;     $dispatch = $key_mode };
+  my $val_name  = sub { $dict->{$key} = $2;    $dispatch = $key_mode };
+  my $val_num   = sub { $dict->{$key} = $6;    $dispatch = $key_mode };
+  my $val_cstr  = sub { $dict->{$key} = $7;    $dispatch = $key_mode };
+  my $val_bool  = sub { $dict->{$key} = $13;   $dispatch = $key_mode };
   my $val_null  = sub { $dict->{$key} = "null"; $dispatch = $key_mode };
-  my $val_token = sub { $dict->{$key} = $2;     $dispatch = $key_mode };
+  my $val_token = sub { $dict->{$key} = $14;   $dispatch = $key_mode };
 
   my $val_dstr = sub {
-    my $v = $2;
+    my $v = $8;
     $v =~ s/\\$n//go;
     $v =~ s/$n/\n/go;
     $dict->{$key} = $v;
@@ -1158,7 +1158,7 @@ sub parse_objects {
   };
 
   my $val_hex = sub {
-    my $v = lc($2);
+    my $v = lc($15);
     $v =~ s/$s+//go;
     $v .= "0" if length($v) % 2 == 1;
     $dict->{$key} = "<$v>";
@@ -1169,13 +1169,13 @@ sub parse_objects {
     my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
       "Byte offset $start: Invalid inline image data!\n")
-      unless $2;
-    $dict->{$key} = { -image => $2 };
+      unless $12;
+    $dict->{$key} = { -image => $12 };
     $dispatch = $key_mode;
   };
 
   my $val_ref = sub {
-    my $id = join("-", $2, $3 || ());
+    my $id = join("-", $4, $5 || ());
     if (my $resolved = $self->{-indirect_objects}{$id}) {
       $dict->{$key} = $resolved->{data};
     } else {
@@ -1207,21 +1207,21 @@ sub parse_objects {
   # Array-mode closures (index 5-21).
   # ===================================================================
   my $arr_name  = sub { push @$array, $2 };
-  my $arr_num   = sub { push @$array, $2 };
-  my $arr_cstr  = sub { push @$array, $2 };
-  my $arr_bool  = sub { push @$array, $2 };
+  my $arr_num   = sub { push @$array, $6 };
+  my $arr_cstr  = sub { push @$array, $7 };
+  my $arr_bool  = sub { push @$array, $13 };
   my $arr_null  = sub { push @$array, "null" };
-  my $arr_token = sub { push @$array, $2 };
+  my $arr_token = sub { push @$array, $14 };
 
   my $arr_dstr = sub {
-    my $v = $2;
+    my $v = $8;
     $v =~ s/\\$n//go;
     $v =~ s/$n/\n/go;
     push @$array, $v;
   };
 
   my $arr_hex = sub {
-    my $v = lc($2);
+    my $v = lc($15);
     $v =~ s/$s+//go;
     $v .= "0" if length($v) % 2 == 1;
     push @$array, "<$v>";
@@ -1231,12 +1231,12 @@ sub parse_objects {
     my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
       "Byte offset $start: Invalid inline image data!\n")
-      unless $2;
-    push @$array, { -image => $2 };
+      unless $12;
+    push @$array, { -image => $12 };
   };
 
   my $arr_ref = sub {
-    my $id = join("-", $2, $3 || ());
+    my $id = join("-", $4, $5 || ());
     if (my $resolved = $self->{-indirect_objects}{$id}) {
       push @$array, $resolved->{data};
     } else {
@@ -1266,15 +1266,15 @@ sub parse_objects {
   # ===================================================================
   # Obj-mode closures (index 5-21).
   # ===================================================================
-  my $obj_name = sub { $obj_value = $2;     &$obj_register };
-  my $obj_num  = sub { $obj_value = $2;     &$obj_register };
-  my $obj_cstr = sub { $obj_value = $2;     &$obj_register };
-  my $obj_bool = sub { $obj_value = $2;     &$obj_register };
+  my $obj_name = sub { $obj_value = $2; &$obj_register };
+  my $obj_num  = sub { $obj_value = $6; &$obj_register };
+  my $obj_cstr = sub { $obj_value = $7; &$obj_register };
+  my $obj_bool = sub { $obj_value = $13; &$obj_register };
   my $obj_null = sub { $obj_value = "null"; &$obj_register };
-  my $obj_tok  = sub { $obj_value = $2;     &$obj_register };
+  my $obj_tok  = sub { $obj_value = $14; &$obj_register };
 
   my $obj_dstr = sub {
-    my $v = $2;
+    my $v = $8;
     $v =~ s/\\$n//go;
     $v =~ s/$n/\n/go;
     $obj_value = $v;
@@ -1282,7 +1282,7 @@ sub parse_objects {
   };
 
   my $obj_hex = sub {
-    my $v = lc($2);
+    my $v = lc($15);
     $v =~ s/$s+//go;
     $v .= "0" if length($v) % 2 == 1;
     $obj_value = "<$v>";
@@ -1293,13 +1293,13 @@ sub parse_objects {
     my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
       "Byte offset $start: Invalid inline image data!\n")
-      unless $2;
-    $obj_value = { -image => $2 };
+      unless $12;
+    $obj_value = { -image => $12 };
     &$obj_register;
   };
 
   my $obj_ref = sub {
-    my $id = join("-", $2, $3 || ());
+    my $id = join("-", $4, $5 || ());
     if (my $resolved = $self->{-indirect_objects}{$id}) {
       $obj_value = $resolved->{data};
     } else {
@@ -1334,7 +1334,7 @@ sub parse_objects {
 
   my $obj_stream = sub {
     my $start = $match_start + length $1;
-    my $sstart = $start + 6 + length $2;
+    my $sstart = $start + 6 + length $10;
     defined $obj_id
       or croak join(": ", $self->file || (),
         "Byte offset $start: stream without obj!\n");
@@ -1346,7 +1346,7 @@ sub parse_objects {
     push @{$self->{-trailers}}, $stream
       if ($stream->{Type} // "") eq "/XRef";
 
-    my $matched_length = length $3;
+    my $matched_length = length $11;
     my $length = $stream->{Length};
     if (defined $length and !ref $length) {
       if ($length > $matched_length) {
@@ -1380,21 +1380,21 @@ sub parse_objects {
   # Top-level closures (index 5-21).
   # ===================================================================
   my $top_name  = sub { push @objects, $2 };
-  my $top_num   = sub { push @objects, $2 };
-  my $top_cstr  = sub { push @objects, $2 };
-  my $top_bool  = sub { push @objects, $2 };
+  my $top_num   = sub { push @objects, $6 };
+  my $top_cstr  = sub { push @objects, $7 };
+  my $top_bool  = sub { push @objects, $13 };
   my $top_null  = sub { push @objects, "null" };
-  my $top_token = sub { push @objects, $2 };
+  my $top_token = sub { push @objects, $14 };
 
   my $top_dstr = sub {
-    my $v = $2;
+    my $v = $8;
     $v =~ s/\\$n//go;
     $v =~ s/$n/\n/go;
     push @objects, $v;
   };
 
   my $top_hex = sub {
-    my $v = lc($2);
+    my $v = lc($15);
     $v =~ s/$s+//go;
     $v .= "0" if length($v) % 2 == 1;
     push @objects, "<$v>";
@@ -1404,12 +1404,12 @@ sub parse_objects {
     my $start = $match_start + length $1;
     croak join(": ", $self->file || (),
       "Byte offset $start: Invalid inline image data!\n")
-      unless $2;
-    push @objects, { -image => $2 };
+      unless $12;
+    push @objects, { -image => $12 };
   };
 
   my $top_ref = sub {
-    my $id = join("-", $2, $3 || ());
+    my $id = join("-", $4, $5 || ());
     if (my $resolved = $self->{-indirect_objects}{$id}) {
       push @objects, $resolved->{data};
     } else {
@@ -1548,27 +1548,27 @@ sub parse_objects {
   # $match_start updated AFTER dispatch so closures can compute
   # $token_start = $match_start + length $1 lazily.
   # ===================================================================
-  while (m{\G((?>$ws*))(?|
-    (/([^$ss()<>\[\]{}/%\#]*(*MARK:5)(?:[^$ss()<>\[\]{}/%\#]+|\#(?!00)[0-9A-Fa-f]{2}(*MARK:6))*))
-    |(\d+)$ws+(\d+)$ws+(?:R(*MARK:7)|obj(*MARK:1))
-    |((?>[+-]?(?=\.?\d)\d*(?:\.\d*)?))(*MARK:8)
-    |>>(*MARK:18)
-    |\](*MARK:19)
-    |<<(*MARK:16)
-    |\[(*MARK:17)
-    |(\([^\\()\r\n]*\))(*MARK:9)
-    |(\((?:(?>[^\\()]+)|\\.|(?-1))*\))(*MARK:10)
-    |startxref$ws+(\d+)(*MARK:2)
-    |endobj(*MARK:20)
-    |stream(\r?\n)((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s(*MARK:21)
-    |ID(?s:$s(.*?)(?:\r\n|$s)?EI$s)?(*MARK:15)
-    |xref(?:$ws*\d+$ws+\d+$n(?:\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))*)*(*MARK:3)
-    |(true|false)(*MARK:11)
-    |null(*MARK:12)
-    |trailer(*MARK:4)
-    |([^$ss()<>\[\]{}/%]+)(*MARK:13)
-    |<([0-9A-Fa-f$ss]*)>(*MARK:14)
-    |([^\r\n]+)(*MARK:0)
+  while (m{\G((?>$ws*))(?:
+    (/([^$ss()<>\[\]{}/%\#]*(*:5)(?:[^$ss()<>\[\]{}/%\#]+|\#(?!00)[0-9A-Fa-f]{2}(*:6))*))
+    |(\d+)$ws+(\d+)$ws+(?:R(*:7)|obj(*:1))
+    |((?>[+-]?(?=\.?\d)\d*(?:\.\d*)?))(*:8)
+    |>>(*:18)
+    |\](*:19)
+    |<<(*:16)
+    |\[(*:17)
+    |(\([^\\()\r\n]*\))(*:9)
+    |(\((?:(?>[^\\()]+)|\\.|(?8))*\))(*:10)
+    |startxref$ws+(\d+)(*:2)
+    |endobj(*:20)
+    |stream(\r?\n)((?>(?:[^e]+|(?!endstream$s)e)*))endstream$s(*:21)
+    |ID(?s:$s(.*?)(?:\r\n|$s)?EI$s)?(*:15)
+    |xref(?:$ws*\d+$ws+\d+$n(?:\d{10}\ \d{5}\ [fn](?:\ [\r\n]|\r\n))*)*(*:3)
+    |(true|false)(*:11)
+    |null(*:12)
+    |trailer(*:4)
+    |([^$ss()<>\[\]{}/%]+)(*:13)
+    |<([0-9A-Fa-f$ss]*)>(*:14)
+    |([^\r\n]+)(*:0)
   )}xgco) {
     $dispatch->[$REGMARK]->();
     $match_start = pos;
