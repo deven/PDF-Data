@@ -1126,7 +1126,7 @@ sub parse_objects {
 
   my $key_hex_name = sub {
     $key = $3;
-    $key =~ s/\#([0-9A-Fa-f]{2})/chr(hex($1))/geo;
+    $key =~ s/\#(?!00)([0-9A-Fa-f]{2})/chr(hex($1))/geo;
     $dispatch = $val_mode;
   };
 
@@ -1565,7 +1565,7 @@ sub parse_objects {
   # $token_start = $match_start + length $1 lazily.
   # ===================================================================
   while (m{\G((?>$ws*))(?:
-    (/([^$ss()<>\[\]{}/%\#]*(*MARK:5)(?:[^$ss()<>\[\]{}/%\#]+|\#(?!00)[0-9A-Fa-f]{2}(*MARK:6))*))
+    (/((?>[^$ss()<>\[\]{}/%\#]*)(*MARK:5)(?>\#(*MARK:6)[^$ss()<>\[\]{}/%]*)?))
     |(\d+)$ws+(\d+)$ws+(?:R(*MARK:7)|obj(*MARK:1))
     |((?>[+-]?(?=\.?\d)\d*(?:\.\d*)?))(*MARK:8)
     |>>(*MARK:18)
