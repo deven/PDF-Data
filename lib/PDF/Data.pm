@@ -986,10 +986,11 @@ sub parse_objects {
 
   # Parser state — shared lexicals for all closures.
   my $self = $me;
-  my ($key, $dict, $array);
+  my ($key, $dict);
   my ($obj_id, $obj_offset, $obj_value, $prev_obj_dispatch);
   my $dispatch;
   my @objects;
+  my $array = \@objects;
 
   # Container nesting stacks.
   my (@dispatch_stack, @dict_stack, @array_stack);
@@ -1061,7 +1062,7 @@ sub parse_objects {
   # ===================================================================
   # Forward declarations.
   # ===================================================================
-  my ($key_mode, $val_mode, $arr_mode, $top_dispatch, $obj_mode);
+  my ($key_mode, $val_mode, $arr_mode, $obj_mode);
 
   # ===================================================================
   # Static closures (indices 0-4).
@@ -1112,6 +1113,9 @@ sub parse_objects {
   };
 
   my $close_array = sub {
+    @array_stack
+      or croak join(": ", $self->file || (),
+        "Byte offset " . pos() . ": \"]\" without matching \"[\"!\n");
     $array = pop @array_stack;
     $dispatch = pop @dispatch_stack;
   };
@@ -1246,7 +1250,7 @@ sub parse_objects {
   my $arr_store_dict = sub {
     my $new = {};
     push @$array, $new;
-    push @dispatch_stack, $arr_mode;
+    push @dispatch_stack, $dispatch;
     push @dict_stack, $dict;
     $dict = $new;
     $dispatch = $key_mode;
@@ -1255,7 +1259,7 @@ sub parse_objects {
   my $arr_store_array = sub {
     my $new = [];
     push @$array, $new;
-    push @dispatch_stack, $arr_mode;
+    push @dispatch_stack, $dispatch;
     push @array_stack, $array;
     $array = $new;
     $dispatch = $arr_mode;
@@ -1393,67 +1397,8 @@ sub parse_objects {
   };
 
   # ===================================================================
-  # Top-level closures (index 5-21).
-  # ===================================================================
-  my $top_name  = sub { push @objects, $2 };
-  my $top_num   = sub { push @objects, $6 };
-  my $top_cstr  = sub { push @objects, $7 };
-  my $top_bool  = sub { push @objects, $11 };
-  my $top_null  = sub { push @objects, "null" };
-  my $top_token = sub { push @objects, $12 };
-
-  my $top_dstr = sub {
-    my $v = $8;
-    $v =~ s/\\$n//go;
-    $v =~ s/$n/\n/go;
-    push @objects, $v;
-  };
-
-  my $top_hex = sub {
-    my $v = lc($13);
-    $v =~ s/$s+//go;
-    $v .= "0" if length($v) % 2 == 1;
-    push @objects, "<$v>";
-  };
-
-  my $top_image = sub {
-    my $start = $match_start + length $1;
-    croak join(": ", $self->file || (),
-      "Byte offset $start: Invalid inline image data!\n")
-      unless $10;
-    push @objects, { -image => $10 };
-  };
-
-  my $top_ref = sub {
-    my $id = join("-", $4, $5 || ());
-    if (my $resolved = $self->{-indirect_objects}{$id}) {
-      push @objects, $resolved->{data};
-    } else {
-      push @objects, \$id;
-      push @{$self->{-unresolved_refs}{$id}}, \$objects[-1];
-    }
-  };
-
-  my $top_store_dict = sub {
-    my $new = {};
-    push @objects, $new;
-    push @dispatch_stack, $top_dispatch;
-    push @dict_stack, $dict;
-    $dict = $new;
-    $dispatch = $key_mode;
-  };
-
-  my $top_store_array = sub {
-    my $new = [];
-    push @objects, $new;
-    push @dispatch_stack, $top_dispatch;
-    push @array_stack, $array;
-    $array = $new;
-    $dispatch = $arr_mode;
-  };
-
-  # ===================================================================
   # Build dispatch arrays: [@static, dynamic closures 5..21].
+  # Top-level reuses arr_* closures since $array starts as \@objects.
   # ===================================================================
 
   $key_mode = [@static,
@@ -1536,27 +1481,7 @@ sub parse_objects {
     $obj_stream,         # 21
   ];
 
-  $top_dispatch = [@static,
-    $top_name,           #  5
-    $top_name,           #  6
-    $top_ref,            #  7
-    $top_num,            #  8
-    $top_cstr,           #  9
-    $top_dstr,           # 10
-    $top_bool,           # 11
-    $top_null,           # 12
-    $top_token,          # 13
-    $top_hex,            # 14
-    $top_image,          # 15
-    $top_store_dict,     # 16
-    $top_store_array,    # 17
-    $error_close_dict,   # 18
-    $error_close_array,  # 19
-    $error_endobj,       # 20
-    $error_stream,       # 21
-  ];
-
-  $dispatch = $top_dispatch;
+  $dispatch = $arr_mode;
 
   # ===================================================================
   # Main parser loop.
@@ -1593,7 +1518,7 @@ sub parse_objects {
   # Check for unclosed containers.
   croak join(": ", $self->file || (),
     "Parse error: Unclosed container!\n")
-    if $dispatch != $top_dispatch;
+    if @array_stack || $dispatch != $arr_mode;
 
   return wantarray ? @objects : $objects[0];
 }
