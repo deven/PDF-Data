@@ -28,31 +28,31 @@ our $program = basename $0;
 
 # List of command-line options.
 our @option_list = (
-  "output_file|o=s"   => \( our $output_file       = "-" ),
+  "output_file|o=s"   => \( our $output_file       = undef ),
 
-  "verbose|v"         => \( our $verbose           = ""  ),
-  "inplace|i"         => \( our $inplace           = ""  ),
+  "verbose|v"         => \( our $verbose           = ""    ),
+  "inplace|i"         => \( our $inplace           = ""    ),
 
-  "parse"             => \( our $parse             = ""  ),
-  "dump"              => \( our $dump              = ""  ),
-  "outline"           => \( our $outline           = ""  ),
+  "parse"             => \( our $parse             = ""    ),
+  "dump"              => \( our $dump              = ""    ),
+  "outline"           => \( our $outline           = ""    ),
 
-  "find_bbox"         => \( our $find_bbox         = ""  ),
-  "new_bbox"          => \( our $new_bbox          = ""  ),
+  "find_bbox"         => \( our $find_bbox         = ""    ),
+  "new_bbox"          => \( our $new_bbox          = ""    ),
 
-  "compress"          => \( our $compress          = 0   ),
-  "decompress"        => \( our $decompress        = ""  ),
-  "minify"            => \( our $minify            = 0   ),
-  "no-minify"         => \( our $no_minify         = ""  ),
-  "object-streams"    => \( our $object_streams    = 0   ),
-  "no-object-streams" => \( our $no_object_streams = ""  ),
-  "optimize"          => \( our $optimize          = 0   ),
-  "no-optimize"       => \( our $no_optimize       = ""  ),
+  "compress"          => \( our $compress          = 0     ),
+  "decompress"        => \( our $decompress        = ""    ),
+  "minify"            => \( our $minify            = 0     ),
+  "no-minify"         => \( our $no_minify         = ""    ),
+  "object-streams"    => \( our $object_streams    = 0     ),
+  "no-object-streams" => \( our $no_object_streams = ""    ),
+  "optimize"          => \( our $optimize          = 0     ),
+  "no-optimize"       => \( our $no_optimize       = ""    ),
 
-  "pdf-version=s"     => \( our $pdf_version       = ""  ),
+  "pdf-version=s"     => \( our $pdf_version       = ""    ),
 
-  "help|h|?"          => \( our $print_help        = ""  ),
-  "version|V"         => \( our $print_version     = ""  ),
+  "help|h|?"          => \( our $print_help        = ""    ),
+  "version|V"         => \( our $print_version     = ""    ),
 );
 
 # Help message.
@@ -115,10 +115,12 @@ autoflush STDOUT;
 
 # Override output filename if --inplace is specified.
 if ($inplace) {
-  die "Error: --inplace is incompatible with --dump!\n" if $dump;
-  die "Error: --inplace is incompatible with --outline!\n" if $outline;
-  die "Error: --inplace is incompatible with --output_file!\n" if $output_file;
+  die "Error: --inplace is incompatible with --dump!\n"        if $dump;
+  die "Error: --inplace is incompatible with --outline!\n"     if $outline;
+  die "Error: --inplace is incompatible with --output_file!\n" if defined $output_file;
   $output_file = $input_pdf;
+} else {
+  $output_file //= "-";
 }
 
 # Get current timestamp.
