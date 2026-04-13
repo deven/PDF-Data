@@ -1072,7 +1072,7 @@ sub parse_objects {
   # ===================================================================
   # Forward declarations.
   # ===================================================================
-  my ($key_mode, $val_mode, $arr_mode, $obj_mode);
+  my ($key_mode, $val_mode, $arr_mode, $top_dispatch, $obj_mode);
 
   # ===================================================================
   # Static closures (indices 0-4).
@@ -1123,9 +1123,6 @@ sub parse_objects {
   };
 
   my $close_array = sub {
-    @array_stack
-      or croak join(": ", $self->file || (),
-        "Byte offset " . pos() . ": \"]\" without matching \"[\"!\n");
     $array = pop @array_stack;
     $dispatch = pop @dispatch_stack;
   };
@@ -1491,7 +1488,27 @@ sub parse_objects {
     $obj_stream,         # 21
   ];
 
-  $dispatch = $arr_mode;
+  $top_dispatch = [@static,
+    $arr_name,           #  5
+    $arr_name,           #  6
+    $arr_ref,            #  7
+    $arr_num,            #  8
+    $arr_cstr,           #  9
+    $arr_dstr,           # 10
+    $arr_bool,           # 11
+    $arr_null,           # 12
+    $arr_token,          # 13
+    $arr_hex,            # 14
+    $arr_image,          # 15
+    $arr_store_dict,     # 16
+    $arr_store_array,    # 17
+    $error_close_dict,   # 18
+    $error_close_array,  # 19
+    $error_endobj,       # 20
+    $error_stream,       # 21
+  ];
+
+  $dispatch = $top_dispatch;
 
   # ===================================================================
   # Main parser loop.
@@ -1528,7 +1545,7 @@ sub parse_objects {
   # Check for unclosed containers.
   croak join(": ", $self->file || (),
     "Parse error: Unclosed container!\n")
-    if @array_stack || $dispatch != $arr_mode;
+    if $dispatch != $top_dispatch;
 
   return wantarray ? @objects : $objects[0];
 }
