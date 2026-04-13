@@ -394,10 +394,13 @@ sub binary_signature {
     my $middle_initial  = splice @initials, 1, 1;
     my ($xxx, $y, $z)   = unpack "A3AA", sprintf("%05b", ord($middle_initial) - 64);
 
-    # Encode the PDF::Data major/minor version numbers, within encoding limits (between v1.0 and v8.63).
+    # Encode the PDF::Data major/minor version numbers, within encoding limits (between v2.0 and v9.63).  The encoding
+    # effectively encodes 3 bits for the major version number: the low-order two bits are embedded in the bit pattern
+    # directly, and the third bit is indicated by byte-swapping the signature when that bit is set.  Note that major
+    # version numbers v8.x and v9.x effectively wrap around, being encoded as "000" for v8.x and "001" for v9.x.
     my ($major, $minor) = $self->version =~ /^v(\d+)\.(\d+)\./;
-    $major = 8  if $major > 8;
-    $minor = 63 if $major > 8 or $minor > 63;
+    $major = 9  if $major > 9;
+    $minor = 63 if $major > 9 or $minor > 63;
 
     #
     # Construct the 4-byte binary signature using a carefully-designed bit pattern which guarantees:
@@ -427,7 +430,7 @@ sub binary_signature {
     my $signature = pack "B32", sprintf "11011%3s111%1s%02b%02b111%1s%04b%04b%04b",
       $xxx, $y, $major & 0x03, $minor >> 4, $z, $minor & 0x0f, map hex, @initials;
 
-    # Swap bytes for major version numbers higher than version 4, effectively encoding a third bit for major version.
+    # Encode a third bit for the major version number by swapping bytes when the third bit is set.
     $signature = pack "vv", unpack "nn", $signature if $major > 4;
 
     # Save the final PDF::Data binary signature in the PDF::Data object.
