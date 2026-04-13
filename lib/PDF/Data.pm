@@ -1368,11 +1368,12 @@ sub parse_objects {
         pos = $sstart;
         if (/\G((?>[^e]+|(?!endstream$s)e)*)endstream$s/gc) {
           my $matched_length = $+[1] - $-[1];
-          carp join(": ", $self->file || (),
-            "Byte offset $start: Stream #$obj_id:",
-            " Declared length $length incorrect (actual $matched_length)!\n")
-            if $length > $matched_length;
-          $length = $matched_length if $length > $matched_length;
+          unless ($length == $matched_length or $length == $matched_length - 1) {
+            carp join(": ", $self->file || (),
+              "Byte offset $start: Stream #$obj_id:",
+              " Declared length $length incorrect (actual $matched_length)!\n");
+            $length = $matched_length;
+          }
         } else {
           croak join(": ", $self->file || (),
             "Byte offset $start: Stream #$obj_id: endstream not found!\n");
