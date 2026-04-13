@@ -6,7 +6,7 @@ use warnings;
 use utf8;
 
 # Declare module version.  (Also in pod documentation below.)
-use version; our $VERSION = version->declare('v1.2.0');
+our $VERSION = '2.000000_001';
 
 # Initialize modules.
 use mro;
@@ -37,6 +37,17 @@ sub is_stream ($);
 sub is_hash   ($) { ref $_[0] && reftype($_[0]) eq "HASH"; }
 sub is_array  ($) { ref $_[0] && reftype($_[0]) eq "ARRAY"; }
 sub is_stream ($) { &is_hash  && exists $_[0]{-data}; }
+
+# Get formatted version number for PDF::Data.
+sub version {
+  my ($self) = @_;
+
+  # Parse version number.
+  my ($major, $minor, $patch, $dev) = "${\$self->VERSION}" =~ /^(\d+)\.(\d{3})(\d{3})(?:_(\d{3}))?$/ or die "Error: Unexpected version number format: \"$self->VERSION\"\n";
+
+  # Return version number in "v2.0.0" or "v2.0.0-rc1" format.
+  return sprintf "v%d.%d.%d%s", $major, $minor, $patch, ($dev ? sprintf "-rc%d", $dev : "");
+}
 
 # Create a new PDF::Data object, representing a minimal PDF file.
 sub new {
@@ -333,7 +344,7 @@ sub pdf_file_data {
   $self->{Info}{ModDate} = $self->timestamp($time) if $time;
 
   # Set PDF producer.
-  $self->{Info}{Producer} = sprintf "(%s)", join " ", __PACKAGE__, $VERSION;
+  $self->{Info}{Producer} = sprintf "(%s)", join " ", __PACKAGE__, $self->version;
 
   # Validate the PDF structure, unless the -novalidate flag is set.
   $self->validate unless $self->{-novalidate};
@@ -385,7 +396,7 @@ sub binary_signature {
     my ($xxx, $y, $z)   = unpack "A3AA", sprintf("%05b", ord($middle_initial) - 64);
 
     # Encode the PDF::Data major/minor version numbers, within encoding limits (between v1.0 and v8.63).
-    my ($major, $minor) = $PDF::Data::VERSION->normal =~ /(\d+)\.(\d+)/;
+    my ($major, $minor) = $self->version =~ /^v(\d+)\.(\d+)\./;
     $major = 8  if $major > 8;
     $minor = 63 if $major > 8 or $minor > 63;
 
@@ -2225,7 +2236,7 @@ PDF::Data - Manipulate PDF files and objects as data structures
 
 =head1 VERSION
 
-version v1.2.0
+version v2.0.0
 
 =head1 SYNOPSIS
 
@@ -2237,6 +2248,13 @@ This module can read and write PDF files, and represents PDF objects as data
 structures that can be readily manipulated.
 
 =head1 METHODS
+
+=head2 version
+
+  my $version = PDF::Data->version;
+
+Return the PDF::Data version number in "v2.0.0" or "v2.0.0-rc1" format for
+human-readable use.
 
 =head2 new
 
