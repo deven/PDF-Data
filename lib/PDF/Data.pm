@@ -3,7 +3,6 @@ package PDF::Data;
 # Require Perl v5.16; enable warnings and UTF-8.
 use v5.16;
 use warnings;
-use utf8;
 
 # Declare module version.  (Also in pod documentation below.)
 our $VERSION = '2.000000_001';
