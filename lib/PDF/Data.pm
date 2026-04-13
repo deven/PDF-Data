@@ -1,17 +1,17 @@
 package PDF::Data;
 
-# Require Perl v5.16; enable warnings and UTF-8.
-use v5.16;
+# Require Perl v5.10; enable strict mode and warnings.
+use v5.10;
+use strict;
 use warnings;
 
 # Declare module version.  (Also in pod documentation below.)
 our $VERSION = '2.000000_001';
 
 # Initialize modules.
-use mro;
-use Carp                qw[carp croak confess];;
-use Clone;
-use Compress::Raw::Zlib qw[:status :flush];
+use Carp                qw[carp croak confess];
+use Clone               qw[];
+use Compress::Raw::Zlib qw[Z_OK Z_STREAM_END Z_FINISH];
 use Data::Dump          qw[dd dump];
 use List::Util          qw[max];
 use Math::Trig          qw[pi];
@@ -449,7 +449,7 @@ sub dump_pdf {
   $mode //= "";
 
   # Use "<standard output>" instead of "-" to describe standard output.
-  my $filename = ($file // "") =~ s/^-?$/<standard output>/r;
+  (my $filename = ($file // "")) =~ s/^-?$/<standard output>/;
 
   # Open output file.
   open my $OUT, ">$file" or croak "$filename: $!\n";
@@ -588,7 +588,7 @@ sub timestamp {
 sub round {
   my ($self, @numbers) = @_;
 
-  @numbers = map { sprintf("%.12f", sprintf("%.12g", $_ || 0)) =~ s/\.?0+$//r; } @numbers;
+  @numbers = map { my $num = sprintf("%.12f", sprintf("%.12g", $_ || 0)); $num =~ s/\.?0+$//; return $num; } @numbers;
   return wantarray ? @numbers : $numbers[0];
 }
 
@@ -1908,7 +1908,7 @@ sub enumerate_indirect_objects {
         $object = shift @hashes;
 
         # Check each hash key.
-        foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
+        foreach my $key (sort { lc($a) cmp lc($b) || $a cmp $b; } keys %{$object}) {
           if (($object->{Type} // "") eq "/ExtGState" and $key eq "Font" and is_array $object->{Font} and is_hash $object->{Font}[0]) {
             push @objects, $object->{Font}[0];
           } elsif ($key =~ /^(?:Data|First|ID|Last|Next|Obj|Parent|ParentTree|Popup|Prev|Root|StmOwn|Threads|Widths)$/
@@ -1942,7 +1942,7 @@ sub enumerate_shared_objects {
   } else {
     # Recurse to check entire object tree.
     if (is_hash $object) {
-      foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
+      foreach my $key (sort { lc($a) cmp lc($b) || $a cmp $b; } keys %{$object}) {
         $self->enumerate_shared_objects($seen, $object->{$key}) if ref $object->{$key};
       }
     } elsif (is_array $object) {
@@ -2023,7 +2023,7 @@ sub write_object {
 
     # Dictionary object.
     $self->serialize_object($pdf_file_data, "<<\n");
-    foreach my $key (sort { fc($a) cmp fc($b) || $a cmp $b; } keys %{$object}) {
+    foreach my $key (sort { lc($a) cmp lc($b) || $a cmp $b; } keys %{$object}) {
       next if $key =~ /^-/;
       my $obj = $object->{$key};
       $self->add_indirect_objects($obj) if is_stream $obj;
@@ -2116,7 +2116,7 @@ sub dump_object {
         $output = "(Stream)";
       } else {
         $label =~ s/(?<=\w)$/->/;
-        my @keys = sort { ($priority{$a} // 0) <=> ($priority{$b} // 0) || fc($a) cmp fc($b) || $a cmp $b; } keys %{$object};
+        my @keys = sort { ($priority{$a} // 0) <=> ($priority{$b} // 0) || lc($a) cmp lc($b) || $a cmp $b; } keys %{$object};
         my $key_len = max map length $_, @keys;
         foreach my $key (@keys) {
           my $obj = $object->{$key};
@@ -2172,7 +2172,7 @@ sub dump_object {
     $seen->{$object} = $label;
     $output = "{ # $label\n";
     $label =~ s/(?<=\w)$/->/;
-    my @keys = sort { ($priority{$a} // 0) <=> ($priority{$b} // 0) || fc($a) cmp fc($b) || $a cmp $b; } keys %{$object};
+    my @keys = sort { ($priority{$a} // 0) <=> ($priority{$b} // 0) || lc($a) cmp lc($b) || $a cmp $b; } keys %{$object};
     my $key_len = max map length $_, @keys;
     foreach my $key (@keys) {
       my $obj = $object->{$key};
