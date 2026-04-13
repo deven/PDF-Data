@@ -1347,64 +1347,45 @@ sub parse_objects {
   my $obj_stream = sub {
     my $start = $match_start + length $1;
     my $sstart = pos();
-    defined $obj_id
-      or croak join(": ", $self->file || (),
-        "Byte offset $start: stream without obj!\n");
+
+    defined $obj_id or croak join(": ", $self->file || (), "Byte offset $start: stream without obj!\n");
     my $stream = $obj_value;
-    (ref $stream eq 'HASH')
-      or croak join(": ", $self->file || (),
-        "Byte offset $start: Stream dictionary missing!\n");
 
-    push @{$self->{-trailers}}, $stream
-      if ($stream->{Type} // "") eq "/XRef";
+    (ref $stream eq 'HASH') or croak join(": ", $self->file || (), "Byte offset $start: Stream dictionary missing!\n");
 
-    # Determine stream data length.
+    push @{$self->{-trailers}}, $stream if ($stream->{Type} // "") eq "/XRef";
+
+    # Verify declared length (if any): check for "endstream" at expected position.
     my $length = $stream->{Length};
-    if (defined $length and !ref $length) {
-      # Verify declared length: check for "endstream" at expected position.
-      pos = $sstart + $length;
-      unless (/\G(?:$n)?endstream$s/gco) {
-        # Declared length incorrect — fall back to regex scan.
-        pos = $sstart;
-        if (/\G((?>[^e]+|(?!endstream$s)e)*)endstream$s/gc) {
-          my $matched_length = $+[1] - $-[1];
-          unless ($length == $matched_length or $length == $matched_length - 1) {
-            carp join(": ", $self->file || (),
-              "Byte offset $start: Stream #$obj_id:",
-              " Declared length $length incorrect (actual $matched_length)!\n");
-            $length = $matched_length;
-          }
-        } else {
-          croak join(": ", $self->file || (),
-            "Byte offset $start: Stream #$obj_id: endstream not found!\n");
-        }
-      }
-    } else {
-      # No valid length — scan with regex.
-      carp join(": ", $self->file || (),
-        "Byte offset $start: Stream #$obj_id:",
-        " Stream length not found in metadata!\n")
-        unless defined $length;
+    unless (defined $length and !ref $length and substr($_, $sstart + $length - 1, 13) =~ /\A(?:[\r\n]|.$n)endstream$s/so) {
+      # No valid length; use regex scan.
       pos = $sstart;
-      if (/\G((?>[^e]+|(?!endstream$s)e)*)endstream$s/gc) {
-        $length = $+[1] - $-[1];
+      if (/\G((?>[^\r\n]+|(?!${n}endstream$s)[\r\n])*$n)endstream$s/gc) {
+        my $matched_length = $+[1] - $-[1];
+
+        if (!defined $length) {
+          warn join(": ", $self->file || (), "Byte offset $start: Stream #$obj_id: Stream length not found in metadata!\n");
+        } elsif (!ref $length) {
+          warn join(": ", $self->file || (), "Byte offset $start: Stream #$obj_id: Declared length $length incorrect (actual $matched_length)!\n");
+        } else {
+          warn join(": ", $self->file || (), "Byte offset $start: Stream #$obj_id: Ignoring forward reference to length; using matched length $matched_length!\n");
+        }
+
+        $stream->{Length} = $length = $matched_length;
       } else {
-        croak join(": ", $self->file || (),
-          "Byte offset $start: Stream #$obj_id: endstream not found!\n");
+        croak join(": ", $self->file || (), "Byte offset $start: Stream #$obj_id: endstream not found!\n");
       }
     }
 
-    $stream->{-data}    = substr($_, $sstart, $length) // "";
-    $stream->{-id}      = $obj_id;
-    $stream->{-offset}  = $start;
-    $stream->{-length}  = $length;
-    $stream->{Length}  //= $length;
+    $stream->{-data}   = substr($_, $sstart, $length) // "";
+    $stream->{-id}     = $obj_id;
+    $stream->{-offset} = $start;
+    $stream->{-length} = $length;
 
     push @{$self->{-streams}}, $stream;
 
     $self->filter_stream($stream) if $stream->{Filter};
-    $self->parse_object_stream($stream)
-      if ($stream->{Type} // "") eq "/ObjStm";
+    $self->parse_object_stream($stream) if ($stream->{Type} // "") eq "/ObjStm";
   };
 
   # ===================================================================
