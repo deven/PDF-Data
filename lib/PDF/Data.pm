@@ -1357,7 +1357,7 @@ sub parse_objects {
 
     # Verify declared length (if any): check for "endstream" at expected position.
     my $length = $stream->{Length};
-    unless (defined $length and !ref $length and substr($_, $sstart + $length - 1, 13) =~ /\A(?:[\r\n]|.$n)endstream$s/so) {
+    unless (defined $length and !ref $length and (pos = $sstart + $length - 1) and /\G(?:[\r\n]|.$n)endstream$s/gcso) {
       # No valid length; use regex scan.
       pos = $sstart;
       if (/\G((?>[^\r\n]+|(?!${n}endstream$s)[\r\n])*$n)endstream$s/gc) {
