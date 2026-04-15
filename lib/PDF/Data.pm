@@ -260,14 +260,39 @@ sub parse_pdf {
     }
   }
 
+  # Resolve indirect object containing bare references, possibly chained.
+  my $ref_objects = delete $self->{-ref_objects} // {};
+  ref: for my $id (sort { $a <=> $b } keys %$ref_objects) {
+    my ($num, $gen) = split /-/, $id;
+    $gen ||= "0";
+    my $target_id = $ref_objects->{$id};
+    my %seen;
+    while ($ref_objects->{$target_id}) {
+      if ($seen{$target_id}++) {
+        warn join(": ", $self->file || (), "Warning: $num $gen R: Circular reference to object #$target_id found!\n");
+        next ref;
+      } else {
+        $target_id = $ref_objects->{$target_id};
+      }
+    }
+    if (my $target = $self->{-indirect_objects}{$target_id}) {
+      $self->{-indirect_objects}{$id} = { data => $target->{data}, id => $id };
+      if (my $refs = $self->{-all_refs}{$id}) {
+        ${$_} = $target->{data} for @{$refs};
+      }
+    } else {
+      warn join(": ", $self->file || (), "Warning: $num $gen R: Referenced indirect object not found!\n");
+    }
+  }
+
   # Check for unresolved references.
   my $all_refs = delete $self->{-all_refs};
   my @ids = sort { $a <=> $b } keys %{$all_refs};
   foreach my $id (@ids) {
     next if exists $self->{-indirect_objects}{$id};
-    ($id, my $gen) = split /-/, $id;
+    my ($num, $gen) = split /-/, $id;
     $gen ||= "0";
-    warn join(": ", $self->file || (), "Warning: $id $gen R: Referenced indirect object not found!\n");
+    warn join(": ", $self->file || (), "Warning: $num $gen R: Referenced indirect object not found!\n");
   }
 
   # Process all streams.
@@ -1313,13 +1338,7 @@ sub parse_objects {
 
   my $obj_ref = sub {
     my $id = join("-", $4, $5 || ());
-    if (my $resolved = $self->{-indirect_objects}{$id}) {
-      $obj_value = $resolved->{data};
-    } else {
-      $obj_value = \$id;
-    }
-    push @{$self->{-all_refs}{$id}}, \$obj_value;
-    &$obj_register;
+    $self->{-ref_objects}{$obj_id} = $id;
   };
 
   my $obj_store_dict = sub {
