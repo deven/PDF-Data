@@ -211,8 +211,8 @@ sub parse_pdf {
   # Parsed indirect objects.
   $self->{-indirect_objects} = {};
 
-  # Unresolved references to indirect objects.
-  $self->{-unresolved_refs} = {};
+  # All references to indirect objects.
+  $self->{-all_refs} = {};
 
   # Trailer dictionaries and cross-reference streams.
   $self->{-trailers} = [];
@@ -261,9 +261,10 @@ sub parse_pdf {
   }
 
   # Check for unresolved references.
-  my $unresolved_refs = delete $self->{-unresolved_refs};
-  my @ids = sort { $a <=> $b } keys %{$unresolved_refs};
+  my $all_refs = delete $self->{-all_refs};
+  my @ids = sort { $a <=> $b } keys %{$all_refs};
   foreach my $id (@ids) {
+    next if exists $self->{-indirect_objects}{$id};
     ($id, my $gen) = split /-/, $id;
     $gen ||= "0";
     warn join(": ", $self->file || (), "Warning: $id $gen R: Referenced indirect object not found!\n");
@@ -293,7 +294,7 @@ sub parse_pdf {
 
   # Discard parsing metadata.
   delete $self->{-indirect_objects};
-  delete $self->{-unresolved_refs};
+  delete $self->{-all_refs};
   delete $self->{-trailers};
   delete $self->{-streams};
 
@@ -1065,9 +1066,9 @@ sub parse_objects {
   # ===================================================================
   my $obj_register = sub {
     my $object = { data => $obj_value, id => $obj_id };
-    $self->{-indirect_objects}{$obj_id}              = $object;
-    $self->{-indirect_objects}{offset}{$obj_offset}   = $object;
-    if (my $refs = delete $self->{-unresolved_refs}{$obj_id}) {
+    $self->{-indirect_objects}{$obj_id}             = $object;
+    $self->{-indirect_objects}{offset}{$obj_offset} = $object;
+    if (my $refs = $self->{-all_refs}{$obj_id}) {
       ${$_} = $obj_value for @{$refs};
     }
   };
@@ -1192,8 +1193,8 @@ sub parse_objects {
       $dict->{$key} = $resolved->{data};
     } else {
       $dict->{$key} = \$id;
-      push @{$self->{-unresolved_refs}{$id}}, \$dict->{$key};
     }
+    push @{$self->{-all_refs}{$id}}, \$dict->{$key};
     $dispatch = $key_mode;
   };
 
@@ -1253,8 +1254,8 @@ sub parse_objects {
       push @$array, $resolved->{data};
     } else {
       push @$array, \$id;
-      push @{$self->{-unresolved_refs}{$id}}, \$array->[-1];
     }
+    push @{$self->{-all_refs}{$id}}, \$array->[-1];
   };
 
   my $arr_store_dict = sub {
@@ -1316,8 +1317,8 @@ sub parse_objects {
       $obj_value = $resolved->{data};
     } else {
       $obj_value = \$id;
-      push @{$self->{-unresolved_refs}{$id}}, \$obj_value;
     }
+    push @{$self->{-all_refs}{$id}}, \$obj_value;
     &$obj_register;
   };
 
@@ -1575,7 +1576,7 @@ sub parse_object_stream {
     $self->{-indirect_objects}{$id} = $object;
     push @stream_objects, $object;
 
-    if (my $refs = delete $self->{-unresolved_refs}{$id}) {
+    if (my $refs = $self->{-all_refs}{$id}) {
       ${$_} = $value for @{$refs};
     }
   }
