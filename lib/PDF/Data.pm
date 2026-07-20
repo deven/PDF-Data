@@ -420,23 +420,27 @@ sub binary_signature {
     my $middle_initial  = splice @initials, 1, 1;
     my ($xxx, $y, $z)   = unpack "A3AA", sprintf("%05b", ord($middle_initial) - 64);
 
-    # Encode the PDF::Data major/minor version numbers, within encoding limits (between v2.0 and v9.63).  The encoding
-    # effectively encodes 3 bits for the major version number: the low-order two bits are embedded in the bit pattern
-    # directly, and the third bit is indicated by byte-swapping the signature when that bit is set.  Note that major
-    # version numbers v8.x and v9.x effectively wrap around, being encoded as "000" for v8.x and "001" for v9.x.
+    # Encode the PDF::Data major/minor version numbers, within encoding limits (between v2.0 and v5.63).  The 2-bit
+    # major version field wraps around modulo 4: "10" for v2.x, "11" for v3.x, "00" for v4.x and "01" for v5.x, with
+    # an implied leading "1" for the wrapped values, since v0.x and v1.x encodings are unsupported.  If these limits
+    # are ever exceeded, do NOT extend the clamping below; instead, define a new encoding using one of the reserved
+    # expansion mechanisms (in order of preference): an administrative major version bump before the minor version
+    # reaches 63, the four reserved adjacent-arrangement byte permutations, or a new epoch signaled by re-encoding
+    # the middle initial bits ("xxx", "y" and "z") with a value other than "10100".
     my ($major, $minor) = $self->version =~ /^v(\d+)\.(\d+)\./;
-    $major = 9  if $major > 9;
-    $minor = 63 if $major > 9 or $minor > 63;
+    $major = 2  if $major < 2;
+    $minor = 63 if $major > 5 or $minor > 63;
+    $major = 5  if $major > 5;
 
     #
     # Construct the 4-byte binary signature using a carefully-designed bit pattern which guarantees:
     #
     # 1. Each byte has the high-order bit set, as recommended by the PDF specification to aid binary file detection.
     # 2. Interpreting the bytes as Latin-1 encoding would result in a nonsensical string.
-    # 3. Interpreting the bytes as UTF-8 would be invalid because because all four bytes have both high-order bits set,
-    #    which would indicate initial bytes of a multi-byte sequence.  Since every valid multi-byte sequence requires
-    #    one or more continuation bytes (with bit 6 clear) to follow the initial byte, this byte sequence constitutes
-    #    an invalid encoding for UTF-8.
+    # 3. Interpreting the bytes as UTF-8 would be invalid because all four bytes have both high-order bits set, which
+    #    would indicate initial bytes of a multi-byte sequence.  Since every valid multi-byte sequence requires one
+    #    or more continuation bytes (with bit 6 clear) to follow the initial byte, this byte sequence constitutes an
+    #    invalid encoding for UTF-8.
     # 4. Interpreting the bytes as UTF-16 would also be invalid, because one of the two 16-bit values would be a low
     #    surrogate code in the U+DC00 to U+DFFF range, and the other 16-bit value would not be a surrogate code.  Since
     #    surrogate codes must be used in pairs, that makes this byte sequence an invalid encoding for UTF-16 as well.
@@ -450,14 +454,24 @@ sub binary_signature {
     #    high-order bytes of each of the special code point ranges (U+DC00 to U+DFFF and U+E000 to U+EFFF) occur twice,
     #    at both even and odd byte offsets.  That makes this algorithm agnostic to endianness.
     #
+    # The position of the fixed 0xDC byte (the author's first and last initials, hex-encoded) identifies the PDF::Data
+    # implementation which generated the file, using the four "mirrored" arrangements (0xDC and the other surrogate
+    # byte in complementary positions):
+    #
+    #   0xDC byte 1 of 4 (DC Ex Ex DD):  Perl
+    #   0xDC byte 2 of 4 (Ex DC DD Ex):  Rust
+    #   0xDC byte 3 of 4 (Ex DD DC Ex):  JavaScript
+    #   0xDC byte 4 of 4 (DD Ex Ex DC):  Reserved (also emitted by unreleased pre-v2.0.0 development builds)
+    #
+    # The four "adjacent" arrangements (0xDC and the other surrogate byte in neighboring positions, which preserve
+    # all of the guarantees above) are reserved for future expansion, as are alternate encodings of the author's middle
+    # initial bits, which a decoder must verify as "10100" before trusting the version fields.
+    #
     # However, note that this algorithm was carefully designed to meet the above guarantees for THIS particular author.
     # Attempting to use this exact algorithm with different author initials would almost certainly fail.
     #
-    my $signature = pack "B32", sprintf "11011%3s111%1s%02b%02b111%1s%04b%04b%04b",
-      $xxx, $y, $major & 0x03, $minor >> 4, $z, $minor & 0x0f, map hex, @initials;
-
-    # Encode a third bit for the major version number by swapping bytes when the third bit is set.
-    $signature = pack "vv", unpack "nn", $signature if $major > 4;
+    my $signature = pack "B32", sprintf "%04b%04b111%1s%02b%02b111%1s%04b11011%3s",
+      (map hex, @initials), $y, $major & 0x03, $minor >> 4, $z, $minor & 0x0f, $xxx;
 
     # Save the final PDF::Data binary signature in the PDF::Data object.
     $self->{-binary_signature} = $signature;
@@ -2497,14 +2511,35 @@ Used by many methods to get the PDF filename (if any) for error reporting.
 
 =head2 binary_signature
 
-Used by C<$pdf-E<gt>pdf_file_data()> to determine the 4-byte binary signature
-to use on the comment line immediately following the %PDF header line.
+Used by C<$pdf-E<gt>pdf_file_data()> to determine the 4-byte binary signature to
+use on the comment line immediately following the %PDF header line.
 
-By default, PDF::Data generates custom binary signature which carefully encodes
-the author's initials (DTC) and the major/minor version number of PDF::Data
-(from v1.0 to v8.63), in such a way that the binary signature is guaranteed to
-be invalid for all Unicode encodings: UTF-8, UTF-16, UTF-16BE, UTF-16LE, UTF-32,
-UTF-32BE and UTF-32LE.  (It will also be nonsensical if interpreted as Latin-1.)
+By default, PDF::Data generates a custom binary signature which carefully
+encodes the author's initials (DTC), the implementation which generated the
+file, and the major/minor version number of PDF::Data (from v2.0 to v5.63), in
+such a way that the binary signature is guaranteed to be invalid for all Unicode
+encodings: UTF-8, UTF-16, UTF-16BE, UTF-16LE, UTF-32, UTF-32BE and UTF-32LE.
+(It will also be nonsensical if interpreted as Latin-1.)
+
+The first and last initials are hex-encoded as the single byte 0xDC, visible in
+a hex dump of the file.  The position of this fixed 0xDC byte within the 4-byte
+signature identifies the implementation of PDF::Data which generated the file:
+
+  0xDC byte 1 of 4 (DC Ex Ex DD):  Perl
+  0xDC byte 2 of 4 (Ex DC DD Ex):  Rust
+  0xDC byte 3 of 4 (Ex DD DC Ex):  JavaScript
+  0xDC byte 4 of 4 (DD Ex Ex DC):  Reserved
+
+(Only the Perl implementation currently exists; the other positions are
+allocated for planned or future implementations.  The reserved position was also
+emitted by unreleased pre-v2.0.0 development builds of this module.)
+
+The remaining bits encode the middle initial (which a decoder should verify), a
+2-bit major version field ("10" for v2.x, "11" for v3.x, "00" for v4.x and "01"
+for v5.x, with an implied leading "1" for the wrapped values) and a 6-bit minor
+version field (0-63).  Additional byte arrangements and alternate middle initial
+encodings which preserve all of the encoding guarantees are reserved for future
+expansion beyond these limits.
 
 The C<$pdf-E<gt>{-preserve_binary_signature}> flag can be used to suppress this
 PDF::Data binary signature.  If this flag is set, the algorithm described above
